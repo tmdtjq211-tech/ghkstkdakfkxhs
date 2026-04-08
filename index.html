@@ -129,6 +129,16 @@
       return { drawn, newDeck };
     };
 
+    // Firebase 에러 공통 처리 함수
+    const handleFirebaseError = (error, actionName) => {
+      console.error(actionName, error);
+      if (error.code === 'permission-denied') {
+        alert("🚨 데이터베이스 쓰기 권한이 없습니다!\n\n파이어베이스 콘솔 -> Firestore Database -> Rules(규칙) 탭으로 이동하신 후,\nallow read, write: if true; 로 코드를 수정하고 '게시(Publish)'를 눌러주세요.");
+      } else {
+        alert(`${actionName} 실패: ${error.message}`);
+      }
+    };
+
     function App() {
       const [user, setUser] = useState(null);
       const [userName, setUserName] = useState('');
@@ -171,7 +181,7 @@
 
       useEffect(() => {
         if (!user || !roomId) return;
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
         const unsubscribe = onSnapshot(roomRef, (snapshot) => {
           if (snapshot.exists()) {
             const data = snapshot.data();
@@ -227,102 +237,128 @@
 
       const createRoom = async () => {
         if (!user) return;
-        const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), newRoomId);
-        await setDoc(roomRef, {
-          status: 'waiting', players: [], turnIndex: 0,
-          logs: ['방이 생성되었습니다.'], deck: shuffle(DECK_TEMPLATE), lastMoveAmount: 0 
-        });
-        setRoomId(newRoomId);
+        try {
+          const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+          const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), newRoomId);
+          await setDoc(roomRef, {
+            status: 'waiting', players: [], turnIndex: 0,
+            logs: ['방이 생성되었습니다.'], deck: shuffle(DECK_TEMPLATE), lastMoveAmount: 0 
+          });
+          setRoomId(newRoomId);
+        } catch (error) {
+          handleFirebaseError(error, "방 만들기");
+        }
       };
 
       const joinRoom = async (id) => {
         if (!user) return;
         const targetId = id || roomId;
         if (!targetId) return;
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), targetId.toUpperCase());
-        const snap = await getDoc(roomRef);
-        if (snap.exists()) {
-          const data = snap.data();
-          if (data.players.length >= MAX_PLAYERS && !data.players.some(p => p.id === user.uid)) {
-            return alert(`방이 가득 찼습니다 (최대 ${MAX_PLAYERS}명)`);
-          }
-          setRoomId(targetId.toUpperCase());
-        } else alert("방을 찾을 수 없습니다.");
+        try {
+          const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), targetId.toUpperCase());
+          const snap = await getDoc(roomRef);
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data.players.length >= MAX_PLAYERS && !data.players.some(p => p.id === user.uid)) {
+              return alert(`방이 가득 찼습니다 (최대 ${MAX_PLAYERS}명)`);
+            }
+            setRoomId(targetId.toUpperCase());
+          } else alert("방을 찾을 수 없습니다.");
+        } catch (error) {
+          handleFirebaseError(error, "방 입장");
+        }
       };
 
       const addAI = async () => {
         if (!roomData) return;
         if (roomData.players.length >= MAX_PLAYERS) return alert(`최대 ${MAX_PLAYERS}명까지만 참여 가능합니다.`);
-        const aiId = 'ai_' + Math.random().toString(36).substring(2, 8);
-        const aiNames = ['알파고', '자비스', '스카이넷', '영물AI'];
-        const aiName = 'AI_' + aiNames[Math.floor(Math.random() * aiNames.length)];
-        const availableChars = Object.keys(CHARACTERS).filter(k => !roomData.players.some(p => p.charId === k));
-        if (availableChars.length === 0) return alert("선택 가능한 캐릭터가 없습니다.");
-        const aiCharId = availableChars[Math.floor(Math.random() * availableChars.length)];
+        
+        try {
+          const aiId = 'ai_' + Math.random().toString(36).substring(2, 8);
+          const aiNames = ['알파고', '자비스', '스카이넷', '영물AI'];
+          const aiName = 'AI_' + aiNames[Math.floor(Math.random() * aiNames.length)];
+          const availableChars = Object.keys(CHARACTERS).filter(k => !roomData.players.some(p => p.charId === k));
+          if (availableChars.length === 0) return alert("선택 가능한 캐릭터가 없습니다.");
+          const aiCharId = availableChars[Math.floor(Math.random() * availableChars.length)];
 
-        let t1 = Math.floor(Math.random() * 34) + 1;
-        let t2 = Math.floor(Math.random() * 34) + 1;
-        while(t1 === t2) t2 = Math.floor(Math.random() * 34) + 1;
+          let t1 = Math.floor(Math.random() * 34) + 1;
+          let t2 = Math.floor(Math.random() * 34) + 1;
+          while(t1 === t2) t2 = Math.floor(Math.random() * 34) + 1;
 
-        const newDeck = [...roomData.deck];
-        const initialHand = newDeck.splice(0, 4);
+          const newDeck = [...roomData.deck];
+          const initialHand = newDeck.splice(0, 4);
 
-        const aiPlayer = {
-          id: aiId, name: aiName, charId: aiCharId, position: 0, prevPosition: 0,
-          hand: initialHand, overpaceTokens: 3, awakenToken: 1, targets: [t1, t2],
-          targetsReached: 0, isShielded: false, isStopped: false, cardsUsedThisTurn: 0,
-          hasMovedThisTurn: false, isAi: true, overpaceUsedThisTurn: false
-        };
+          const aiPlayer = {
+            id: aiId, name: aiName, charId: aiCharId, position: 0, prevPosition: 0,
+            hand: initialHand, overpaceTokens: 3, awakenToken: 1, targets: [t1, t2],
+            targetsReached: 0, isShielded: false, isStopped: false, cardsUsedThisTurn: 0,
+            hasMovedThisTurn: false, isAi: true, overpaceUsedThisTurn: false
+          };
 
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
-        await updateDoc(roomRef, {
-          players: [...roomData.players, aiPlayer], deck: newDeck,
-          logs: [...roomData.logs, `🤖 ${aiName}님이 ${CHARACTERS[aiCharId].name} 캐릭터로 참가했습니다!`]
-        });
+          const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
+          await updateDoc(roomRef, {
+            players: [...roomData.players, aiPlayer], deck: newDeck,
+            logs: [...roomData.logs, `🤖 ${aiName}님이 ${CHARACTERS[aiCharId].name} 캐릭터로 참가했습니다!`]
+          });
+        } catch (error) {
+          handleFirebaseError(error, "AI 추가");
+        }
       };
 
       const selectCharacter = async (charId) => {
         if (!roomData) return;
-        if (roomData.players.length >= MAX_PLAYERS && !myPlayer) return alert(`방이 가득 찼습니다 (최대 ${MAX_PLAYERS}명)`);
+        const myPlayerCheck = roomData.players.find(p => p.id === user.uid);
+        if (roomData.players.length >= MAX_PLAYERS && !myPlayerCheck) return alert(`방이 가득 찼습니다 (최대 ${MAX_PLAYERS}명)`);
 
-        let t1 = Math.floor(Math.random() * 34) + 1;
-        let t2 = Math.floor(Math.random() * 34) + 1;
-        while(t1 === t2) t2 = Math.floor(Math.random() * 34) + 1;
+        try {
+          let t1 = Math.floor(Math.random() * 34) + 1;
+          let t2 = Math.floor(Math.random() * 34) + 1;
+          while(t1 === t2) t2 = Math.floor(Math.random() * 34) + 1;
 
-        const newDeck = [...roomData.deck];
-        const initialHand = newDeck.splice(0, 4);
+          const newDeck = [...roomData.deck];
+          const initialHand = newDeck.splice(0, 4);
 
-        const newPlayer = {
-          id: user.uid, name: userName, charId, position: 0, prevPosition: 0,
-          hand: initialHand, overpaceTokens: 3, awakenToken: 1, targets: [t1, t2],
-          targetsReached: 0, isShielded: false, isStopped: false, cardsUsedThisTurn: 0, 
-          hasMovedThisTurn: false, overpaceUsedThisTurn: false
-        };
+          const newPlayer = {
+            id: user.uid, name: userName, charId, position: 0, prevPosition: 0,
+            hand: initialHand, overpaceTokens: 3, awakenToken: 1, targets: [t1, t2],
+            targetsReached: 0, isShielded: false, isStopped: false, cardsUsedThisTurn: 0, 
+            hasMovedThisTurn: false, overpaceUsedThisTurn: false
+          };
 
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
-        await updateDoc(roomRef, {
-          players: [...roomData.players, newPlayer], deck: newDeck,
-          logs: [...roomData.logs, `${userName}님이 ${CHARACTERS[charId].name}를 선택했습니다.`]
-        });
+          const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
+          await updateDoc(roomRef, {
+            players: [...roomData.players, newPlayer], deck: newDeck,
+            logs: [...roomData.logs, `${userName}님이 ${CHARACTERS[charId].name}를 선택했습니다.`]
+          });
+        } catch (error) {
+          handleFirebaseError(error, "캐릭터 선택");
+        }
       };
 
       const startGame = async () => {
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
-        await updateDoc(roomRef, { status: 'playing', logs: [...roomData.logs, '게임이 시작되었습니다!'] });
+        try {
+          const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
+          await updateDoc(roomRef, { status: 'playing', logs: [...roomData.logs, '게임이 시작되었습니다!'] });
+        } catch (error) {
+          handleFirebaseError(error, "게임 시작");
+        }
       };
 
       const myPlayer = roomData?.players.find(p => p.id === user?.uid);
       const isMyTurn = roomData?.players[roomData?.turnIndex]?.id === user?.uid;
 
       const addLog = async (msg) => {
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
-        await updateDoc(roomRef, { logs: [...roomData.logs.slice(-20), msg] });
+        try {
+          const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
+          await updateDoc(roomRef, { logs: [...roomData.logs.slice(-20), msg] });
+        } catch (error) { console.error("addLog error:", error); }
       };
 
       const updatePlayers = async (newPlayers, extraData = {}) => {
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
-        await updateDoc(roomRef, { players: newPlayers, ...extraData });
+        try {
+          const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
+          await updateDoc(roomRef, { players: newPlayers, ...extraData });
+        } catch (error) { console.error("updatePlayers error:", error); }
       };
 
       const processAITurn = async (aiInfo) => {
@@ -413,8 +449,10 @@
         const { drawn, newDeck } = drawCards(roomData.deck, 1);
         newPlayers[nextIndex].hand.push(...drawn);
 
-        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
-        await updateDoc(roomRef, { players: newPlayers, turnIndex: nextIndex, lastMoveAmount: nextMoveAmount, deck: newDeck, logs: [...roomData.logs.slice(-20), ...logs] });
+        try {
+          const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
+          await updateDoc(roomRef, { players: newPlayers, turnIndex: nextIndex, lastMoveAmount: nextMoveAmount, deck: newDeck, logs: [...roomData.logs.slice(-20), ...logs] });
+        } catch(e) { console.error("AI Turn Error", e); }
         isProcessingAI.current = false;
       };
 
@@ -559,6 +597,7 @@
       };
 
       if (!user) return <div className="flex justify-center items-center h-screen bg-sky-50 text-sky-800 font-bold">서버 연결 중...</div>;
+      
       const opponents = roomData?.players.filter(p => p.id !== user?.uid) || [];
 
       return (
@@ -706,12 +745,22 @@
                     <p className="text-sm text-gray-600 mt-1">선택: {CHARACTERS[myPlayer.charId].name}</p>
                   </div>
                 )}
-                {roomData.players.length > 0 && (
+                
+                {/* 🐛 핵심 수정 지점: 캐릭터를 선택해서 myPlayer가 생긴 경우에만 시작 버튼 표시! */}
+                {roomData.players.length > 0 && myPlayer && (
                   <div className="mt-6 flex justify-center">
                     <button onClick={startGame} className="bg-green-500 text-white px-12 py-3 rounded-full font-bold text-lg shadow-lg hover:bg-green-600 animate-pulse">게임 시작</button>
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* 혹시 남이 게임을 시작해버렸는데 나는 아직 캐릭터 선택을 안 한 경우의 관전 화면 */}
+          {view === 'game' && !myPlayer && (
+            <div className="flex flex-col justify-center items-center h-full bg-sky-100 p-6 text-center">
+               <h1 className="text-2xl font-bold text-sky-800 mb-2">이미 진행 중인 게임입니다 🏃‍♂️💨</h1>
+               <p className="text-gray-600">캐릭터를 선택하기 전에 방장이 게임을 시작했습니다.<br/>새로고침을 눌러 다시 입장해주세요!</p>
             </div>
           )}
 
@@ -847,5 +896,6 @@
   </script>
 </body>
 </html>
+
 
 ```
