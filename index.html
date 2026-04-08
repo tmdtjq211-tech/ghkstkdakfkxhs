@@ -1,1007 +1,851 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
-import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, getDoc } from 'firebase/firestore';
-import { Settings, Users, Play, CheckCircle2 } from 'lucide-react';
-
-// --- Firebase Initialization ---
-// 캔버스 환경이 아닐 때(외부 호스팅, 로컬 등) 승섭님의 파이어베이스를 자동으로 바라보게 세팅합니다.
-const fallbackConfig = {
-  apiKey: "AIzaSyAlgEXtkmcIp60oPK-MS66OexSoebhAQYc",
-  authDomain: "ghkstkdakfkxhs.firebaseapp.com",
-  projectId: "ghkstkdakfkxhs",
-  storageBucket: "ghkstkdakfkxhs.firebasestorage.app",
-  messagingSenderId: "309451141964",
-  appId: "1:309451141964:web:7bf5255161bfba7fffd5e9",
-  measurementId: "G-EE7743EP32"
-};
-
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : fallbackConfig;
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'sky-marathon-prototype';
-
-// --- Game Constants & Data ---
-const TOTAL_CELLS = 36; // 0 ~ 35
-const MAX_PLAYERS = 4; // 최대 4인
-
-const DEFAULT_IMAGES = {
-  board: 'https://images.unsplash.com/photo-1513002749550-c59d786b8e6c?auto=format&fit=crop&q=80&w=1000', 
-  cardBack: 'https://images.unsplash.com/photo-1614315584065-a131b0e932ec?auto=format&fit=crop&q=60&w=200', 
-  gumiho: 'https://images.unsplash.com/photo-1560807707-8cc77767d783?auto=format&fit=crop&q=60&w=200',
-  phoenix: 'https://images.unsplash.com/photo-1606567595334-d39972c85dbe?auto=format&fit=crop&q=60&w=200',
-  dragon: 'https://images.unsplash.com/photo-1577493341505-1a862788e225?auto=format&fit=crop&q=60&w=200',
-  rabbit: 'https://images.unsplash.com/photo-1425082661705-1834bfd09dca?auto=format&fit=crop&q=60&w=200',
-  haetae: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&q=60&w=200',
-  zikooter: 'https://images.unsplash.com/photo-1593179427043-42e1262d1d0c?auto=format&fit=crop&q=60&w=200',
-  bicycle: 'https://images.unsplash.com/photo-1485965120184-e220f721d03e?auto=format&fit=crop&q=60&w=200',
-  devil: 'https://images.unsplash.com/photo-1614088907604-cb98888b5cb2?auto=format&fit=crop&q=60&w=200',
-  angel: 'https://images.unsplash.com/photo-1520092329718-d9f78eb96b34?auto=format&fit=crop&q=60&w=200',
-  trafficLight: 'https://images.unsplash.com/photo-1534067980306-538baaf23b36?auto=format&fit=crop&q=60&w=200',
-  overpace: 'https://images.unsplash.com/photo-1552674605-15c214d69f43?auto=format&fit=crop&q=60&w=200',
-  timeRewind: 'https://images.unsplash.com/photo-1501139083538-0139583c060f?auto=format&fit=crop&q=60&w=200',
-  timeWarp: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&q=60&w=200',
-};
-
-const CHARACTERS = {
-  gumiho: { id: 'gumiho', name: '구미호', speed: 1, ability: '9칸 앞으로 점프', awaken: '[여우불] 카드 수치 ±1 보정' },
-  phoenix: { id: 'phoenix', name: '봉황', speed: 2, ability: '덱에서 2장 뽑아 1장 사용', awaken: '[불사조의 깃털] 공격 카드 1회 무효화' },
-  dragon: { id: 'dragon', name: '용', speed: 3, ability: '다음 카드 수치 2배', awaken: '[승천] 기본 이동 시 주사위 굴려 추가 이동' },
-  rabbit: { id: 'rabbit', name: '달토끼', speed: 4, ability: '상대 패 1장 무작위 파괴', awaken: '[절구 찧기] 주변 상대 3칸 뒤로 밀어냄' },
-  haetae: { id: 'haetae', name: '해태', speed: 2, ability: '원하는 상대 능력 복사', awaken: '[심판의 뿔] 복사 능력 2번 사용' }
-};
-
-const CARDS = {
-  zikooter: { id: 'zikooter', name: '지쿠터', desc: '선택한 대상 2칸 후진 (-2)', type: 'target' },
-  bicycle: { id: 'bicycle', name: '자전거', desc: '선택한 대상 3칸 후진 (-3)', type: 'target' },
-  devil: { id: 'devil', name: '악마', desc: '선택한 대상 6칸 후진 (-6)', type: 'target' },
-  angel: { id: 'angel', name: '천사', desc: '나에게 사용 시 +3칸 이동 및 방어', type: 'self' },
-  trafficLight: { id: 'trafficLight', name: '신호등', desc: '선택한 대상 다음 턴 이동 불가', type: 'target' },
-  overpace: { id: 'overpace', name: '오버페이스', desc: '현재 +5칸. 다음 턴 기본이동 불가', type: 'self' },
-  timeRewind: { id: 'timeRewind', name: '시간 역행', desc: '상대방을 직전 턴 위치로 되돌림', type: 'target' },
-  timeWarp: { id: 'timeWarp', name: '시간 가속', desc: '직전 턴 플레이어의 이동 칸수만큼 전진', type: 'self' }
-};
-
-const DECK_TEMPLATE = [
-  ...Array(4).fill('zikooter'), ...Array(4).fill('bicycle'), ...Array(2).fill('devil'),
-  ...Array(3).fill('angel'), ...Array(3).fill('trafficLight'), ...Array(2).fill('overpace'),
-  ...Array(2).fill('timeRewind'), ...Array(2).fill('timeWarp')
-];
-
-const shuffle = (array) => {
-  const newArr = [...array];
-  for (let i = newArr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
-  }
-  return newArr;
-};
-
-const drawCards = (currentDeck, num) => {
-  let newDeck = [...currentDeck];
-  let drawn = [];
-  for (let i = 0; i < num; i++) {
-    if (newDeck.length === 0) newDeck = shuffle(DECK_TEMPLATE);
-    if (newDeck.length > 0) drawn.push(newDeck.pop());
-  }
-  return { drawn, newDeck };
-};
-
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [userName, setUserName] = useState('');
-  const [roomId, setRoomId] = useState('');
-  const [roomData, setRoomData] = useState(null);
+```html
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>하늘나라 마라톤</title>
   
-  const [view, setView] = useState('lobby'); 
-  const [selectedChar, setSelectedChar] = useState(null);
-  const [tooltipInfo, setTooltipInfo] = useState(null);
-  const [showAdmin, setShowAdmin] = useState(false);
-  const [customImages, setCustomImages] = useState(() => {
-    const saved = localStorage.getItem('skyMarathonImages');
-    return saved ? JSON.parse(saved) : DEFAULT_IMAGES;
-  });
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
   
-  const [pendingAction, setPendingAction] = useState(null); 
-  const [targetSelectMode, setTargetSelectMode] = useState(false);
-  const [gambleState, setGambleState] = useState(null); // 'discard' | 'guess'
-  const [pendingGambleCardIdx, setPendingGambleCardIdx] = useState(null);
-  const isProcessingAI = useRef(false);
+  <!-- Babel (HTML 안에서 React JSX를 읽게 해주는 도구) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <style>
+    /* 스크롤바 숨기기 유틸리티 */
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+    .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    body { overscroll-behavior-y: none; } /* 모바일 당김 새로고침 방지 */
+  </style>
 
-  // Tooltip Auto-Hide (확인 버튼 없이 자동으로 사라짐)
-  useEffect(() => {
-    if (tooltipInfo) {
-      const timer = setTimeout(() => {
-        setTooltipInfo(null);
-      }, 2500); // 2.5초 후 자동 숨김
-      return () => clearTimeout(timer);
-    }
-  }, [tooltipInfo]);
-
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) {
-        console.error("Auth error:", err);
+  <!-- React 및 Firebase 모듈 불러오기 (Import Map) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0",
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js"
       }
+    }
+  </script>
+</head>
+<body class="bg-sky-50 text-gray-800 antialiased h-screen overflow-hidden">
+  
+  <!-- 리액트 앱이 그려질 공간 -->
+  <div id="root" class="h-full w-full"></div>
+
+  <!-- 실제 게임 로직 스크립트 -->
+  <script type="text/babel" data-type="module">
+    import React, { useState, useEffect, useRef } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { Settings, Users, Play, CheckCircle2 } from 'lucide-react';
+    import { initializeApp } from 'firebase/app';
+    import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+    import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, getDoc } from 'firebase/firestore';
+
+    // --- 파이어베이스 설정 (승섭님의 DB 키 적용됨) ---
+    const firebaseConfig = {
+      apiKey: "AIzaSyAlgEXtkmcIp60oPK-MS66OexSoebhAQYc",
+      authDomain: "ghkstkdakfkxhs.firebaseapp.com",
+      projectId: "ghkstkdakfkxhs",
+      storageBucket: "ghkstkdakfkxhs.firebasestorage.app",
+      messagingSenderId: "309451141964",
+      appId: "1:309451141964:web:7bf5255161bfba7fffd5e9",
+      measurementId: "G-EE7743EP32"
     };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u && !userName) setUserName(`Player_${u.uid.slice(0,4)}`);
-    });
-    return () => unsubscribe();
-  }, []);
 
-  useEffect(() => {
-    if (!user || !roomId) return;
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
-    const unsubscribe = onSnapshot(roomRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        setRoomData(data);
-        if (data.status === 'playing') setView('game');
-        else if (data.status === 'waiting') setView('charSelect');
-      } else {
-        setRoomData(null);
-        setView('lobby');
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = 'sky-marathon-live'; 
+
+    // --- Game Constants & Data ---
+    const TOTAL_CELLS = 36; 
+    const MAX_PLAYERS = 4; 
+
+    const DEFAULT_IMAGES = {
+      board: 'https://images.unsplash.com/photo-1513002749550-c59d786b8e6c?auto=format&fit=crop&q=80&w=1000', 
+      cardBack: 'https://images.unsplash.com/photo-1614315584065-a131b0e932ec?auto=format&fit=crop&q=60&w=200', 
+      gumiho: 'https://images.unsplash.com/photo-1560807707-8cc77767d783?auto=format&fit=crop&q=60&w=200',
+      phoenix: 'https://images.unsplash.com/photo-1606567595334-d39972c85dbe?auto=format&fit=crop&q=60&w=200',
+      dragon: 'https://images.unsplash.com/photo-1577493341505-1a862788e225?auto=format&fit=crop&q=60&w=200',
+      rabbit: 'https://images.unsplash.com/photo-1425082661705-1834bfd09dca?auto=format&fit=crop&q=60&w=200',
+      haetae: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&q=60&w=200',
+      zikooter: 'https://images.unsplash.com/photo-1593179427043-42e1262d1d0c?auto=format&fit=crop&q=60&w=200',
+      bicycle: 'https://images.unsplash.com/photo-1485965120184-e220f721d03e?auto=format&fit=crop&q=60&w=200',
+      devil: 'https://images.unsplash.com/photo-1614088907604-cb98888b5cb2?auto=format&fit=crop&q=60&w=200',
+      angel: 'https://images.unsplash.com/photo-1520092329718-d9f78eb96b34?auto=format&fit=crop&q=60&w=200',
+      trafficLight: 'https://images.unsplash.com/photo-1534067980306-538baaf23b36?auto=format&fit=crop&q=60&w=200',
+      overpace: 'https://images.unsplash.com/photo-1552674605-15c214d69f43?auto=format&fit=crop&q=60&w=200',
+      timeRewind: 'https://images.unsplash.com/photo-1501139083538-0139583c060f?auto=format&fit=crop&q=60&w=200',
+      timeWarp: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&q=60&w=200',
+    };
+
+    const CHARACTERS = {
+      gumiho: { id: 'gumiho', name: '구미호', speed: 1, ability: '9칸 앞으로 점프', awaken: '[여우불] 카드 수치 ±1 보정' },
+      phoenix: { id: 'phoenix', name: '봉황', speed: 2, ability: '덱에서 2장 뽑아 1장 사용', awaken: '[불사조의 깃털] 공격 카드 1회 무효화' },
+      dragon: { id: 'dragon', name: '용', speed: 3, ability: '다음 카드 수치 2배', awaken: '[승천] 기본 이동 시 주사위 굴려 추가 이동' },
+      rabbit: { id: 'rabbit', name: '달토끼', speed: 4, ability: '상대 패 1장 무작위 파괴', awaken: '[절구 찧기] 주변 상대 3칸 뒤로 밀어냄' },
+      haetae: { id: 'haetae', name: '해태', speed: 2, ability: '원하는 상대 능력 복사', awaken: '[심판의 뿔] 복사 능력 2번 사용' }
+    };
+
+    const CARDS = {
+      zikooter: { id: 'zikooter', name: '지쿠터', desc: '대상 2칸 후진 (-2)', type: 'target' },
+      bicycle: { id: 'bicycle', name: '자전거', desc: '대상 3칸 후진 (-3)', type: 'target' },
+      devil: { id: 'devil', name: '악마', desc: '대상 6칸 후진 (-6)', type: 'target' },
+      angel: { id: 'angel', name: '천사', desc: '나에게 +3칸 이동 및 방어', type: 'self' },
+      trafficLight: { id: 'trafficLight', name: '신호등', desc: '대상 다음 턴 이동 불가', type: 'target' },
+      overpace: { id: 'overpace', name: '오버페이스', desc: '현재 +5칸. 다음기본 불가', type: 'self' },
+      timeRewind: { id: 'timeRewind', name: '시간 역행', desc: '대상을 직전 턴 위치로', type: 'target' },
+      timeWarp: { id: 'timeWarp', name: '시간 가속', desc: '직전 턴 이동 칸만큼 전진', type: 'self' }
+    };
+
+    const DECK_TEMPLATE = [
+      ...Array(4).fill('zikooter'), ...Array(4).fill('bicycle'), ...Array(2).fill('devil'),
+      ...Array(3).fill('angel'), ...Array(3).fill('trafficLight'), ...Array(2).fill('overpace'),
+      ...Array(2).fill('timeRewind'), ...Array(2).fill('timeWarp')
+    ];
+
+    const shuffle = (array) => {
+      const newArr = [...array];
+      for (let i = newArr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
       }
-    }, (error) => console.error("Snapshot error:", error));
-    return () => unsubscribe();
-  }, [user, roomId]);
+      return newArr;
+    };
 
-  useEffect(() => {
-    localStorage.setItem('skyMarathonImages', JSON.stringify(customImages));
-  }, [customImages]);
+    const drawCards = (currentDeck, num) => {
+      let newDeck = [...currentDeck];
+      let drawn = [];
+      for (let i = 0; i < num; i++) {
+        if (newDeck.length === 0) newDeck = shuffle(DECK_TEMPLATE);
+        if (newDeck.length > 0) drawn.push(newDeck.pop());
+      }
+      return { drawn, newDeck };
+    };
 
-  useEffect(() => {
-    if (view !== 'game' || !roomData || !user) return;
-    const currentPlayer = roomData.players[roomData.turnIndex];
-    const isHost = roomData.players[0]?.id === user.uid; 
-    
-    if (currentPlayer?.isAi && isHost && !isProcessingAI.current) {
-      isProcessingAI.current = true;
-      setTimeout(() => { processAITurn(currentPlayer); }, 500); 
-    }
-  }, [roomData, view, user]);
+    function App() {
+      const [user, setUser] = useState(null);
+      const [userName, setUserName] = useState('');
+      const [roomId, setRoomId] = useState('');
+      const [roomData, setRoomData] = useState(null);
+      
+      const [view, setView] = useState('lobby'); 
+      const [selectedChar, setSelectedChar] = useState(null);
+      const [tooltipInfo, setTooltipInfo] = useState(null);
+      const [showAdmin, setShowAdmin] = useState(false);
+      const [customImages, setCustomImages] = useState(() => {
+        const saved = localStorage.getItem('skyMarathonImages');
+        return saved ? JSON.parse(saved) : DEFAULT_IMAGES;
+      });
+      
+      const [pendingAction, setPendingAction] = useState(null); 
+      const [targetSelectMode, setTargetSelectMode] = useState(false);
+      const [gambleState, setGambleState] = useState(null); 
+      const [pendingGambleCardIdx, setPendingGambleCardIdx] = useState(null);
+      const isProcessingAI = useRef(false);
 
-  const handleImageChange = (key, url) => setCustomImages(prev => ({ ...prev, [key]: url }));
-
-  // 기기 갤러리에서 이미지 첨부 시 자동 리사이징 및 적용 처리
-  const handleFileUpload = (key, event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-    
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-        
-        // 보드판은 크게, 캐릭터/카드는 작게 리사이징 (localStorage 용량 초과 방지)
-        const MAX_SIZE = key === 'board' ? 1200 : 300; 
-        
-        if (width > height) {
-          if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
-        } else {
-          if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
+      useEffect(() => {
+        if (tooltipInfo) {
+          const timer = setTimeout(() => { setTooltipInfo(null); }, 2500);
+          return () => clearTimeout(timer);
         }
-        
-        canvas.width = width; 
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        
-        // 압축된 Base64 데이터로 변환 (JPEG 70% 품질)
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
-        setCustomImages(prev => ({ ...prev, [key]: dataUrl }));
+      }, [tooltipInfo]);
+
+      useEffect(() => {
+        const initAuth = async () => {
+          try { await signInAnonymously(auth); } catch (err) { console.error("Auth error:", err); }
+        };
+        initAuth();
+        const unsubscribe = onAuthStateChanged(auth, (u) => {
+          setUser(u);
+          if (u && !userName) setUserName(`Player_${u.uid.slice(0,4)}`);
+        });
+        return () => unsubscribe();
+      }, []);
+
+      useEffect(() => {
+        if (!user || !roomId) return;
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
+        const unsubscribe = onSnapshot(roomRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            setRoomData(data);
+            if (data.status === 'playing') setView('game');
+            else if (data.status === 'waiting') setView('charSelect');
+          } else {
+            setRoomData(null);
+            setView('lobby');
+          }
+        }, (error) => console.error("Snapshot error:", error));
+        return () => unsubscribe();
+      }, [user, roomId]);
+
+      useEffect(() => {
+        localStorage.setItem('skyMarathonImages', JSON.stringify(customImages));
+      }, [customImages]);
+
+      useEffect(() => {
+        if (view !== 'game' || !roomData || !user) return;
+        const currentPlayer = roomData.players[roomData.turnIndex];
+        const isHost = roomData.players[0]?.id === user.uid; 
+        if (currentPlayer?.isAi && isHost && !isProcessingAI.current) {
+          isProcessingAI.current = true;
+          setTimeout(() => { processAITurn(currentPlayer); }, 500); 
+        }
+      }, [roomData, view, user]);
+
+      const handleImageChange = (key, url) => setCustomImages(prev => ({ ...prev, [key]: url }));
+
+      const handleFileUpload = (key, event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            let width = img.width; let height = img.height;
+            const MAX_SIZE = key === 'board' ? 1200 : 300; 
+            if (width > height) { if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; } } 
+            else { if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; } }
+            canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.7); 
+            setCustomImages(prev => ({ ...prev, [key]: dataUrl }));
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
       };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
-  };
 
-  const createRoom = async () => {
-    if (!user) return;
-    const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), newRoomId);
-    await setDoc(roomRef, {
-      status: 'waiting', players: [], turnIndex: 0,
-      logs: ['방이 생성되었습니다.'], deck: shuffle(DECK_TEMPLATE), lastMoveAmount: 0 
-    });
-    setRoomId(newRoomId);
-  };
+      const createRoom = async () => {
+        if (!user) return;
+        const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), newRoomId);
+        await setDoc(roomRef, {
+          status: 'waiting', players: [], turnIndex: 0,
+          logs: ['방이 생성되었습니다.'], deck: shuffle(DECK_TEMPLATE), lastMoveAmount: 0 
+        });
+        setRoomId(newRoomId);
+      };
 
-  const joinRoom = async (id) => {
-    if (!user) return;
-    const targetId = id || roomId;
-    if (!targetId) return;
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), targetId.toUpperCase());
-    const snap = await getDoc(roomRef);
-    if (snap.exists()) {
-      const data = snap.data();
-      if (data.players.length >= MAX_PLAYERS && !data.players.some(p => p.id === user.uid)) {
-        return alert(`방이 가득 찼습니다 (최대 ${MAX_PLAYERS}명)`);
-      }
-      setRoomId(targetId.toUpperCase());
-    }
-    else alert("방을 찾을 수 없습니다.");
-  };
+      const joinRoom = async (id) => {
+        if (!user) return;
+        const targetId = id || roomId;
+        if (!targetId) return;
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), targetId.toUpperCase());
+        const snap = await getDoc(roomRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.players.length >= MAX_PLAYERS && !data.players.some(p => p.id === user.uid)) {
+            return alert(`방이 가득 찼습니다 (최대 ${MAX_PLAYERS}명)`);
+          }
+          setRoomId(targetId.toUpperCase());
+        } else alert("방을 찾을 수 없습니다.");
+      };
 
-  const addAI = async () => {
-    if (!roomData) return;
-    if (roomData.players.length >= MAX_PLAYERS) {
-      return alert(`최대 ${MAX_PLAYERS}명까지만 참여 가능합니다.`);
-    }
+      const addAI = async () => {
+        if (!roomData) return;
+        if (roomData.players.length >= MAX_PLAYERS) return alert(`최대 ${MAX_PLAYERS}명까지만 참여 가능합니다.`);
+        const aiId = 'ai_' + Math.random().toString(36).substring(2, 8);
+        const aiNames = ['알파고', '자비스', '스카이넷', '영물AI'];
+        const aiName = 'AI_' + aiNames[Math.floor(Math.random() * aiNames.length)];
+        const availableChars = Object.keys(CHARACTERS).filter(k => !roomData.players.some(p => p.charId === k));
+        if (availableChars.length === 0) return alert("선택 가능한 캐릭터가 없습니다.");
+        const aiCharId = availableChars[Math.floor(Math.random() * availableChars.length)];
 
-    const aiId = 'ai_' + Math.random().toString(36).substring(2, 8);
-    const aiNames = ['알파고', '자비스', '스카이넷', '영물AI'];
-    const aiName = 'AI_' + aiNames[Math.floor(Math.random() * aiNames.length)];
-    
-    const availableChars = Object.keys(CHARACTERS).filter(k => !roomData.players.some(p => p.charId === k));
-    if (availableChars.length === 0) return alert("선택 가능한 캐릭터가 없습니다.");
-    const aiCharId = availableChars[Math.floor(Math.random() * availableChars.length)];
+        let t1 = Math.floor(Math.random() * 34) + 1;
+        let t2 = Math.floor(Math.random() * 34) + 1;
+        while(t1 === t2) t2 = Math.floor(Math.random() * 34) + 1;
 
-    let t1 = Math.floor(Math.random() * 34) + 1;
-    let t2 = Math.floor(Math.random() * 34) + 1;
-    while(t1 === t2) t2 = Math.floor(Math.random() * 34) + 1;
+        const newDeck = [...roomData.deck];
+        const initialHand = newDeck.splice(0, 4);
 
-    const newDeck = [...roomData.deck];
-    const initialHand = newDeck.splice(0, 4);
+        const aiPlayer = {
+          id: aiId, name: aiName, charId: aiCharId, position: 0, prevPosition: 0,
+          hand: initialHand, overpaceTokens: 3, awakenToken: 1, targets: [t1, t2],
+          targetsReached: 0, isShielded: false, isStopped: false, cardsUsedThisTurn: 0,
+          hasMovedThisTurn: false, isAi: true, overpaceUsedThisTurn: false
+        };
 
-    const aiPlayer = {
-      id: aiId, name: aiName, charId: aiCharId, position: 0, prevPosition: 0,
-      hand: initialHand, overpaceTokens: 3, awakenToken: 1, targets: [t1, t2],
-      targetsReached: 0, isShielded: false, isStopped: false, cardsUsedThisTurn: 0,
-      hasMovedThisTurn: false, isAi: true, overpaceUsedThisTurn: false
-    };
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
+        await updateDoc(roomRef, {
+          players: [...roomData.players, aiPlayer], deck: newDeck,
+          logs: [...roomData.logs, `🤖 ${aiName}님이 ${CHARACTERS[aiCharId].name} 캐릭터로 참가했습니다!`]
+        });
+      };
 
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
-    await updateDoc(roomRef, {
-      players: [...roomData.players, aiPlayer], deck: newDeck,
-      logs: [...roomData.logs, `🤖 ${aiName}님이 ${CHARACTERS[aiCharId].name} 캐릭터로 참가했습니다!`]
-    });
-  };
+      const selectCharacter = async (charId) => {
+        if (!roomData) return;
+        if (roomData.players.length >= MAX_PLAYERS && !myPlayer) return alert(`방이 가득 찼습니다 (최대 ${MAX_PLAYERS}명)`);
 
-  const selectCharacter = async (charId) => {
-    if (!roomData) return;
-    if (roomData.players.length >= MAX_PLAYERS && !myPlayer) {
-      return alert(`방이 가득 찼습니다 (최대 ${MAX_PLAYERS}명)`);
-    }
+        let t1 = Math.floor(Math.random() * 34) + 1;
+        let t2 = Math.floor(Math.random() * 34) + 1;
+        while(t1 === t2) t2 = Math.floor(Math.random() * 34) + 1;
 
-    let t1 = Math.floor(Math.random() * 34) + 1;
-    let t2 = Math.floor(Math.random() * 34) + 1;
-    while(t1 === t2) t2 = Math.floor(Math.random() * 34) + 1;
+        const newDeck = [...roomData.deck];
+        const initialHand = newDeck.splice(0, 4);
 
-    const newDeck = [...roomData.deck];
-    const initialHand = newDeck.splice(0, 4);
+        const newPlayer = {
+          id: user.uid, name: userName, charId, position: 0, prevPosition: 0,
+          hand: initialHand, overpaceTokens: 3, awakenToken: 1, targets: [t1, t2],
+          targetsReached: 0, isShielded: false, isStopped: false, cardsUsedThisTurn: 0, 
+          hasMovedThisTurn: false, overpaceUsedThisTurn: false
+        };
 
-    const newPlayer = {
-      id: user.uid, name: userName, charId, position: 0, prevPosition: 0,
-      hand: initialHand, overpaceTokens: 3, awakenToken: 1, targets: [t1, t2],
-      targetsReached: 0, isShielded: false, isStopped: false, cardsUsedThisTurn: 0, hasMovedThisTurn: false, overpaceUsedThisTurn: false
-    };
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
+        await updateDoc(roomRef, {
+          players: [...roomData.players, newPlayer], deck: newDeck,
+          logs: [...roomData.logs, `${userName}님이 ${CHARACTERS[charId].name}를 선택했습니다.`]
+        });
+      };
 
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
-    await updateDoc(roomRef, {
-      players: [...roomData.players, newPlayer], deck: newDeck,
-      logs: [...roomData.logs, `${userName}님이 ${CHARACTERS[charId].name}를 선택했습니다.`]
-    });
-  };
+      const startGame = async () => {
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
+        await updateDoc(roomRef, { status: 'playing', logs: [...roomData.logs, '게임이 시작되었습니다!'] });
+      };
 
-  const startGame = async () => {
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
-    await updateDoc(roomRef, { status: 'playing', logs: [...roomData.logs, '게임이 시작되었습니다!'] });
-  };
+      const myPlayer = roomData?.players.find(p => p.id === user?.uid);
+      const isMyTurn = roomData?.players[roomData?.turnIndex]?.id === user?.uid;
 
-  const myPlayer = roomData?.players.find(p => p.id === user?.uid);
-  const isMyTurn = roomData?.players[roomData?.turnIndex]?.id === user?.uid;
+      const addLog = async (msg) => {
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
+        await updateDoc(roomRef, { logs: [...roomData.logs.slice(-20), msg] });
+      };
 
-  const addLog = async (msg) => {
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
-    await updateDoc(roomRef, { logs: [...roomData.logs.slice(-20), msg] });
-  };
+      const updatePlayers = async (newPlayers, extraData = {}) => {
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
+        await updateDoc(roomRef, { players: newPlayers, ...extraData });
+      };
 
-  const updatePlayers = async (newPlayers, extraData = {}) => {
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
-    await updateDoc(roomRef, { players: newPlayers, ...extraData });
-  };
+      const processAITurn = async (aiInfo) => {
+        let newPlayers = [...roomData.players];
+        let myAi = { ...newPlayers.find(p => p.id === aiInfo.id) };
+        let logs = [];
+        let nextMoveAmount = roomData.lastMoveAmount || 0;
 
-  const processAITurn = async (aiInfo) => {
-    let newPlayers = [...roomData.players];
-    let myAi = { ...newPlayers.find(p => p.id === aiInfo.id) };
-    let logs = [];
-    let nextMoveAmount = roomData.lastMoveAmount || 0;
+        if (myAi.isStopped) {
+            logs.push(`🤖 [AI] ${myAi.name}님은 신호등에 걸려 움직일 수 없습니다!`);
+            myAi.isStopped = false; 
+        } else {
+            let activeTarget = myAi.targets.find((t) => t !== -1);
+            if (activeTarget === undefined) activeTarget = 35; 
+            const getDist = (pos, target) => (target - pos + 36) % 36;
+            const getReverseDist = (pos, target) => (pos - target + 36) % 36;
+            let dist = getDist(myAi.position, activeTarget);
+            let revDist = getReverseDist(myAi.position, activeTarget);
+            
+            if (myAi.overpaceTokens > 0 && !myAi.overpaceUsedThisTurn && dist >= 8 && activeTarget !== 35) {
+                myAi.overpaceTokens -= 1; myAi.overpaceUsedThisTurn = true;
+                myAi.position = (myAi.position + 5) % 36;
+                logs.push(`🤖 [AI] ${myAi.name}님이 🔥오버페이스 토큰을 사용해 5칸 전진!`);
+                dist = getDist(myAi.position, activeTarget); revDist = getReverseDist(myAi.position, activeTarget);
+            }
 
-    if (myAi.isStopped) {
-        logs.push(`🤖 [AI] ${myAi.name}님은 신호등에 걸려 움직일 수 없습니다!`);
-        myAi.isStopped = false; 
-    } else {
-        let activeTarget = myAi.targets.find((t) => t !== -1);
-        if (activeTarget === undefined) activeTarget = 35; 
-        const getDist = (pos, target) => (target - pos + 36) % 36;
-        const getReverseDist = (pos, target) => (pos - target + 36) % 36;
+            let cardsUsed = 0; let hand = [...myAi.hand];
+            const humanPlayers = newPlayers.filter(p => !p.isAi);
+            const targetHuman = humanPlayers.length > 0 ? humanPlayers[Math.floor(Math.random() * humanPlayers.length)] : null;
 
-        let dist = getDist(myAi.position, activeTarget);
-        let revDist = getReverseDist(myAi.position, activeTarget);
-        
-        // AI 토큰 적극 사용 로직 추가 (1턴 1회 제한 반영)
-        if (myAi.overpaceTokens > 0 && !myAi.overpaceUsedThisTurn && dist >= 8 && activeTarget !== 35) {
-            myAi.overpaceTokens -= 1;
-            myAi.overpaceUsedThisTurn = true;
-            myAi.position = (myAi.position + 5) % 36;
-            logs.push(`🤖 [AI] ${myAi.name}님이 🔥오버페이스 토큰을 사용해 5칸 전진!`);
-            dist = getDist(myAi.position, activeTarget); 
-            revDist = getReverseDist(myAi.position, activeTarget);
-        }
-
-        let cardsUsed = 0;
-        let hand = [...myAi.hand];
-        const humanPlayers = newPlayers.filter(p => !p.isAi);
-        const targetHuman = humanPlayers.length > 0 ? humanPlayers[Math.floor(Math.random() * humanPlayers.length)] : null;
-
-        for (let i = hand.length - 1; i >= 0 && cardsUsed < 2; i--) {
-          const cardId = hand[i];
-          let used = false;
-          if (cardId === 'angel' && dist === 3) {
-             myAi.position = (myAi.position + 3) % 36; used = true;
-             logs.push(`🤖 [AI] ${myAi.name}님이 천사(+3)를 써서 타겟에 안착!`);
-          } else if (cardId === 'zikooter' && revDist === 2) {
-             myAi.position = (myAi.position - 2 + 36) % 36; used = true;
-             logs.push(`🤖 [AI] ${myAi.name}님이 자신에게 지쿠터(-2)를 써서 타겟에 안착!`);
-          } else if (cardId === 'bicycle' && revDist === 3) {
-             myAi.position = (myAi.position - 3 + 36) % 36; used = true;
-             logs.push(`🤖 [AI] ${myAi.name}님이 자신에게 자전거(-3)를 써서 타겟에 안착!`);
-          } else if (cardId === 'overpace' && dist >= 6) {
-             myAi.position = (myAi.position + 5) % 36; used = true;
-             logs.push(`🤖 [AI] ${myAi.name}님이 오버페이스(+5) 카드를 사용!`);
-          } else if (cardId === 'timeWarp' && roomData.lastMoveAmount > 0 && roomData.lastMoveAmount <= dist) {
-             myAi.position = (myAi.position + roomData.lastMoveAmount) % 36; used = true;
-             logs.push(`🤖 [AI] ${myAi.name}님이 시간가속 카드를 사용해 ${roomData.lastMoveAmount}칸 전진!`);
-          } else if (['devil', 'trafficLight', 'timeRewind'].includes(cardId) && targetHuman && Math.random() > 0.3) {
-             let hIndex = newPlayers.findIndex(p => p.id === targetHuman.id);
-             if (!newPlayers[hIndex].isShielded) {
-                 if (cardId === 'devil') {
-                     newPlayers[hIndex].position = (newPlayers[hIndex].position - 6 + 36) % 36;
-                     logs.push(`🤖 [AI 공격] ${myAi.name}님이 ${targetHuman.name}에게 악마(-6)를 던졌습니다!`);
-                 } else if (cardId === 'trafficLight') {
-                     newPlayers[hIndex].isStopped = true;
-                     logs.push(`🤖 [AI 공격] ${myAi.name}님이 ${targetHuman.name}에게 신호등을 걸었습니다!`);
-                 } else if (cardId === 'timeRewind') {
-                     newPlayers[hIndex].position = newPlayers[hIndex].prevPosition;
-                     logs.push(`🤖 [AI 공격] ${myAi.name}님이 ${targetHuman.name}에게 시간 역행을 사용!`);
+            for (let i = hand.length - 1; i >= 0 && cardsUsed < 2; i--) {
+              const cardId = hand[i]; let used = false;
+              if (cardId === 'angel' && dist === 3) {
+                 myAi.position = (myAi.position + 3) % 36; used = true;
+                 logs.push(`🤖 [AI] ${myAi.name}님이 천사(+3)를 써서 타겟에 안착!`);
+              } else if (cardId === 'zikooter' && revDist === 2) {
+                 myAi.position = (myAi.position - 2 + 36) % 36; used = true;
+                 logs.push(`🤖 [AI] ${myAi.name}님이 자신에게 지쿠터(-2)를 써서 타겟에 안착!`);
+              } else if (cardId === 'bicycle' && revDist === 3) {
+                 myAi.position = (myAi.position - 3 + 36) % 36; used = true;
+                 logs.push(`🤖 [AI] ${myAi.name}님이 자신에게 자전거(-3)를 써서 타겟에 안착!`);
+              } else if (cardId === 'overpace' && dist >= 6) {
+                 myAi.position = (myAi.position + 5) % 36; used = true;
+                 logs.push(`🤖 [AI] ${myAi.name}님이 오버페이스(+5) 카드를 사용!`);
+              } else if (cardId === 'timeWarp' && roomData.lastMoveAmount > 0 && roomData.lastMoveAmount <= dist) {
+                 myAi.position = (myAi.position + roomData.lastMoveAmount) % 36; used = true;
+                 logs.push(`🤖 [AI] ${myAi.name}님이 시간가속 카드를 사용해 ${roomData.lastMoveAmount}칸 전진!`);
+              } else if (['devil', 'trafficLight', 'timeRewind'].includes(cardId) && targetHuman && Math.random() > 0.3) {
+                 let hIndex = newPlayers.findIndex(p => p.id === targetHuman.id);
+                 if (!newPlayers[hIndex].isShielded) {
+                     if (cardId === 'devil') {
+                         newPlayers[hIndex].position = (newPlayers[hIndex].position - 6);
+                         if(newPlayers[hIndex].position < 0) newPlayers[hIndex].position = 0;
+                         logs.push(`🤖 [AI 공격] ${myAi.name}님이 ${targetHuman.name}에게 악마(-6)를 던졌습니다!`);
+                     } else if (cardId === 'trafficLight') {
+                         newPlayers[hIndex].isStopped = true;
+                         logs.push(`🤖 [AI 공격] ${myAi.name}님이 ${targetHuman.name}에게 신호등을 걸었습니다!`);
+                     } else if (cardId === 'timeRewind') {
+                         newPlayers[hIndex].position = newPlayers[hIndex].prevPosition;
+                         logs.push(`🤖 [AI 공격] ${myAi.name}님이 ${targetHuman.name}에게 시간 역행을 사용!`);
+                     }
+                     used = true;
                  }
-                 used = true;
-             }
-          }
-          if (used) {
-              hand.splice(i, 1); cardsUsed++;
-              dist = getDist(myAi.position, activeTarget); revDist = getReverseDist(myAi.position, activeTarget);
-          }
-        }
-        myAi.hand = hand;
+              }
+              if (used) { hand.splice(i, 1); cardsUsed++; dist = getDist(myAi.position, activeTarget); revDist = getReverseDist(myAi.position, activeTarget); }
+            }
+            myAi.hand = hand;
 
-        const speed = CHARACTERS[myAi.charId].speed;
-        if (myAi.position !== activeTarget) {
-            if (dist >= speed || activeTarget === 35) {
-                myAi.position = (myAi.position + speed) % 36; nextMoveAmount = speed;
-                logs.push(`🤖 [AI] ${myAi.name}님이 기본 이동(${speed}칸) 전진. (위치: ${myAi.position})`);
-            } else {
-                logs.push(`🤖 [AI] ${myAi.name}님이 목표를 놓치지 않기 위해 멈춰 섰습니다!`);
+            const speed = CHARACTERS[myAi.charId].speed;
+            if (myAi.position !== activeTarget) {
+                if (dist >= speed || activeTarget === 35) {
+                    myAi.position = (myAi.position + speed) % 36; nextMoveAmount = speed;
+                    logs.push(`🤖 [AI] ${myAi.name}님이 기본 이동(${speed}칸) 전진. (위치: ${myAi.position})`);
+                } else logs.push(`🤖 [AI] ${myAi.name}님이 목표를 놓치지 않기 위해 멈춰 섰습니다!`);
+            }
+
+            if (myAi.targets.includes(myAi.position)) {
+                myAi.targetsReached += 1;
+                logs.push(`🎯 [AI 각성] ${myAi.name}님이 목표 숫자 [${myAi.position}]에 정확히 도달했습니다!!`);
+                myAi.targets = myAi.targets.map(t => t === myAi.position ? -1 : t);
             }
         }
 
-        if (myAi.targets.includes(myAi.position)) {
-            myAi.targetsReached += 1;
-            logs.push(`🎯 [AI 각성] ${myAi.name}님이 목표 숫자 [${myAi.position}]에 정확히 도달했습니다!!`);
-            myAi.targets = myAi.targets.map(t => t === myAi.position ? -1 : t);
-        }
-    }
+        newPlayers = newPlayers.map(p => p.id === myAi.id ? myAi : p);
+        let nextIndex = (roomData.turnIndex + 1) % roomData.players.length;
+        newPlayers = newPlayers.map(p => ({...p, hasMovedThisTurn: false, cardsUsedThisTurn: 0, overpaceUsedThisTurn: false}));
 
-    newPlayers = newPlayers.map(p => p.id === myAi.id ? myAi : p);
-    let nextIndex = (roomData.turnIndex + 1) % roomData.players.length;
-    newPlayers = newPlayers.map(p => ({...p, hasMovedThisTurn: false, cardsUsedThisTurn: 0, overpaceUsedThisTurn: false}));
+        const { drawn, newDeck } = drawCards(roomData.deck, 1);
+        newPlayers[nextIndex].hand.push(...drawn);
 
-    // AI 턴 종료 후 다음 사람에게 1장 드로우
-    const { drawn, newDeck } = drawCards(roomData.deck, 1);
-    newPlayers[nextIndex].hand.push(...drawn);
+        const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'skyRooms'), roomId);
+        await updateDoc(roomRef, { players: newPlayers, turnIndex: nextIndex, lastMoveAmount: nextMoveAmount, deck: newDeck, logs: [...roomData.logs.slice(-20), ...logs] });
+        isProcessingAI.current = false;
+      };
 
-    const roomRef = doc(collection(db, 'artifacts', appId, 'public', 'data', 'skyRooms'), roomId);
-    await updateDoc(roomRef, { 
-        players: newPlayers, turnIndex: nextIndex, lastMoveAmount: nextMoveAmount,
-        deck: newDeck,
-        logs: [...roomData.logs.slice(-20), ...logs] 
-    });
-    isProcessingAI.current = false;
-  };
+      const movePlayer = (players, targetUserId, amount) => {
+        return players.map(p => {
+          if (p.id === targetUserId) {
+            let newPos = p.position + amount;
+            if (newPos < 0) newPos = 0; 
+            if (newPos >= TOTAL_CELLS) newPos = newPos - TOTAL_CELLS; 
+            let reached = p.targetsReached; let tgs = [...p.targets];
+            if (tgs.includes(newPos)) { reached += 1; tgs[tgs.indexOf(newPos)] = -1; }
+            return { ...p, prevPosition: p.position, position: newPos, targetsReached: reached, targets: tgs };
+          }
+          return p;
+        });
+      };
 
-  const movePlayer = (players, targetUserId, amount) => {
-    return players.map(p => {
-      if (p.id === targetUserId) {
-        let newPos = p.position + amount;
-        if (newPos < 0) newPos = 0; // 0칸 뒤로는 내려가지 않고 0에 고정
-        if (newPos >= TOTAL_CELLS) newPos = newPos - TOTAL_CELLS; 
-        
-        let reached = p.targetsReached;
-        let tgs = [...p.targets];
-        if (tgs.includes(newPos)) {
-            reached += 1; tgs[tgs.indexOf(newPos)] = -1; 
-        }
-        return { ...p, prevPosition: p.position, position: newPos, targetsReached: reached, targets: tgs };
-      }
-      return p;
-    });
-  };
+      const handleTokenUse = async (type) => {
+        if (!isMyTurn) return;
+        let newPlayers = [...roomData.players];
+        let me = newPlayers.find(p => p.id === user.uid);
+        let moveAmt = 0; let logMsg = "";
 
-  const handleDoubleClickCard = (cardIdx, cardId) => {
-    if (!isMyTurn) return;
-    if (myPlayer.cardsUsedThisTurn >= 2) return alert("이번 턴에는 더 이상 카드를 사용할 수 없습니다.");
-    
-    // 더블클릭 시 팝업 닫기
-    setTooltipInfo(null);
-    
-    const cardData = CARDS[cardId];
-    if (cardData.type === 'target') {
-      setPendingAction({ type: 'card', cardIdx, cardId });
-      setTargetSelectMode(true);
-    } else {
-      executeCardEffect(cardIdx, cardId, myPlayer.id);
-    }
-  };
+        if (type === 'overpace') {
+            if (me.overpaceUsedThisTurn) return alert("오버페이스 토큰은 1턴에 1번만 사용할 수 있습니다!");
+            if (me.overpaceTokens > 0) { me.overpaceTokens -= 1; me.overpaceUsedThisTurn = true; moveAmt = 5; logMsg = `🔥 ${me.name}님이 오버페이스 토큰 사용! 5칸 전진!`; }
+        } else if (type === 'awaken' && me.awakenToken > 0 && me.targetsReached > 0) {
+            me.awakenToken -= 1; logMsg = `⚡ ${me.name}님이 각성 능력을 발동했습니다! [${CHARACTERS[me.charId].awaken}]`;
+        } else return; 
 
-  const handleTargetSelect = async (targetUserId) => {
-    if (pendingAction.type === 'card') {
-      executeCardEffect(pendingAction.cardIdx, pendingAction.cardId, targetUserId);
-    }
-    setTargetSelectMode(false); setPendingAction(null);
-  };
+        if (moveAmt !== 0) newPlayers = movePlayer(newPlayers, me.id, moveAmt);
+        else newPlayers = newPlayers.map(p => p.id === me.id ? me : p);
 
-  const executeCardEffect = async (cardIdx, cardId, targetUserId) => {
-    let newPlayers = [...roomData.players];
-    const targetPlayer = newPlayers.find(p => p.id === targetUserId);
-    const targetName = targetPlayer.name;
+        addLog(logMsg); await updatePlayers(newPlayers);
+      };
 
-    if (targetPlayer.isShielded && targetUserId !== user.uid) {
-      addLog(`${targetName}님은 천사의 보호를 받고 있어 효과가 무효화되었습니다!`);
-    } else {
-      let moveAmt = 0;
-      if (cardId === 'zikooter') moveAmt = -2;
-      if (cardId === 'bicycle') moveAmt = -3;
-      if (cardId === 'devil') moveAmt = -6;
-      if (cardId === 'angel') { moveAmt = 3; }
-      if (cardId === 'overpace') moveAmt = 5;
-      if (cardId === 'timeWarp') moveAmt = roomData.lastMoveAmount || 0;
-      
-      if (moveAmt !== 0) {
-         newPlayers = movePlayer(newPlayers, targetUserId, moveAmt);
-         addLog(`${userName}님이 ${CARDS[cardId].name} 사용! ${targetName} ${moveAmt > 0 ? '+'+moveAmt : moveAmt}칸 이동.`);
-      }
+      const handleDoubleClickCard = (cardIdx, cardId) => {
+        if (!isMyTurn) return;
+        if (myPlayer.cardsUsedThisTurn >= 2) return alert("이번 턴에는 더 이상 카드를 사용할 수 없습니다 (최대 2장).");
+        setTooltipInfo(null);
+        const cardData = CARDS[cardId];
+        if (cardData.type === 'target') { setPendingAction({ type: 'card', cardIdx, cardId }); setTargetSelectMode(true); } 
+        else executeCardEffect(cardIdx, cardId, myPlayer.id);
+      };
 
-      if (cardId === 'timeRewind') {
-         newPlayers = newPlayers.map(p => {
-             if(p.id === targetUserId) return {...p, position: p.prevPosition};
-             return p;
-         });
-         addLog(`${userName}님이 시간 역행 사용! ${targetName}님이 이전 위치로 돌아갑니다.`);
-      }
-      if (cardId === 'trafficLight') {
-         addLog(`${userName}님이 신호등 사용! ${targetName}님 발이 묶입니다.`);
-      }
-    }
+      const handleTargetSelect = async (targetUserId) => {
+        if (pendingAction.type === 'card') executeCardEffect(pendingAction.cardIdx, pendingAction.cardId, targetUserId);
+        setTargetSelectMode(false); setPendingAction(null);
+      };
 
-    newPlayers = newPlayers.map(p => {
-      if (p.id === user.uid) {
-        const newHand = [...p.hand]; newHand.splice(cardIdx, 1);
-        return { ...p, hand: newHand, cardsUsedThisTurn: p.cardsUsedThisTurn + 1 };
-      }
-      return p;
-    });
-    await updatePlayers(newPlayers);
-  };
+      const executeCardEffect = async (cardIdx, cardId, targetUserId) => {
+        let newPlayers = [...roomData.players];
+        const targetPlayer = newPlayers.find(p => p.id === targetUserId);
+        const targetName = targetPlayer.name;
 
-  const handleBaseMove = async () => {
-    if(!isMyTurn || myPlayer.hasMovedThisTurn) return;
-    const charData = CHARACTERS[myPlayer.charId];
-    let newPlayers = movePlayer(roomData.players, user.uid, charData.speed);
-    newPlayers = newPlayers.map(p => p.id === user.uid ? {...p, hasMovedThisTurn: true} : p);
-    await updatePlayers(newPlayers, { lastMoveAmount: charData.speed });
-    addLog(`${userName}님이 기본 이동으로 ${charData.speed}칸 전진했습니다.`);
-  };
-
-  const handleGambleClick = () => {
-    if (!isMyTurn) return;
-    if (myPlayer.hand.length === 0) return alert("버릴 카드가 없어서 도박을 할 수 없습니다!");
-    setGambleState('discard');
-  };
-
-  const executeGamble = async (guess) => {
-    const roll = Math.floor(Math.random() * 10) + 1; // 1~10
-    const isOdd = roll % 2 !== 0;
-    const isSuccess = (guess === 'odd' && isOdd) || (guess === 'even' && !isOdd);
-    
-    let moveAmt = isSuccess ? roll : -roll;
-    
-    let newPlayers = [...roomData.players];
-    // 카드 버리기
-    newPlayers = newPlayers.map(p => {
-      if (p.id === user.uid) {
-        const newHand = [...p.hand];
-        newHand.splice(pendingGambleCardIdx, 1);
-        return { ...p, hand: newHand };
-      }
-      return p;
-    });
-    
-    // 플레이어 이동
-    newPlayers = movePlayer(newPlayers, user.uid, moveAmt);
-    
-    await updatePlayers(newPlayers, { lastMoveAmount: Math.abs(moveAmt) });
-    addLog(`🎲 도박: [${guess === 'odd' ? '홀' : '짝'}] 선택 -> 주사위 [${roll}]! ${isSuccess ? '대성공! 앞으로' : '실패... 뒤로'} ${Math.abs(moveAmt)}칸 이동.`);
-    
-    setGambleState(null);
-    setPendingGambleCardIdx(null);
-  };
-
-  const handleTokenUse = async (type) => {
-    if (!isMyTurn) return;
-    let newPlayers = [...roomData.players];
-    let me = newPlayers.find(p => p.id === user.uid);
-    let moveAmt = 0;
-    let logMsg = "";
-
-    if (type === 'overpace') {
-        if (me.overpaceUsedThisTurn) return alert("오버페이스 토큰은 1턴에 1번만 사용할 수 있습니다!");
-        if (me.overpaceTokens > 0) {
-            me.overpaceTokens -= 1;
-            me.overpaceUsedThisTurn = true;
-            moveAmt = 5;
-            logMsg = `🔥 ${me.name}님이 오버페이스 토큰 사용! 5칸 전진!`;
-        }
-    } else if (type === 'awaken' && me.awakenToken > 0 && me.targetsReached > 0) {
-        me.awakenToken -= 1;
-        logMsg = `⚡ ${me.name}님이 각성 능력을 발동했습니다! [${CHARACTERS[me.charId].awaken}]`;
-    } else {
-        return; 
-    }
-
-    if (moveAmt !== 0) {
-        newPlayers = movePlayer(newPlayers, me.id, moveAmt);
-    } else {
-        newPlayers = newPlayers.map(p => p.id === me.id ? me : p);
-    }
-
-    addLog(logMsg);
-    await updatePlayers(newPlayers);
-  };
-
-  const endTurn = async () => {
-    if (!isMyTurn) return;
-    let nextIndex = (roomData.turnIndex + 1) % roomData.players.length;
-    let newPlayers = [...roomData.players];
-    newPlayers = newPlayers.map(p => {
-        if(p.id === user.uid) return {...p, hasMovedThisTurn: false, cardsUsedThisTurn: 0, overpaceUsedThisTurn: false};
-        return p;
-    });
-    
-    // 내 턴 종료 시 다음 사람에게 카드 1장 드로우
-    const { drawn, newDeck } = drawCards(roomData.deck, 1);
-    newPlayers[nextIndex].hand.push(...drawn);
-
-    await updatePlayers(newPlayers, { turnIndex: nextIndex, deck: newDeck });
-    addLog(`턴이 종료되었습니다. 다음 차례입니다.`);
-  };
-
-  // --- Board Position Math (0: bottom, clockwise loop) ---
-  const calculateBoardPosition = (index) => {
-    const angle = Math.PI / 2 + (index / TOTAL_CELLS) * 2 * Math.PI; 
-    const rx = 45; // 가로 폭 비율 (더 넓게)
-    const ry = 35; // 세로 폭 비율 (더 낮게)
-    return {
-      left: `calc(50% + ${rx * Math.cos(angle)}%)`,
-      top: `calc(50% + ${ry * Math.sin(angle)}%)`
-    };
-  };
-
-  if (!user) return <div className="flex justify-center items-center h-screen bg-sky-50 text-gray-800">Loading...</div>;
-  const opponents = roomData?.players.filter(p => p.id !== user?.uid) || [];
-
-  return (
-    <div className="min-h-screen w-full bg-sky-50 font-sans text-gray-800 flex flex-col relative">
-      
-      {/* Admin Button */}
-      <button onClick={() => setShowAdmin(true)} className="absolute top-4 left-4 z-50 p-2 bg-white rounded-full shadow-md hover:bg-gray-100">
-        <Settings size={20} className="text-gray-600" />
-      </button>
-
-      {/* Admin Modal (이미지 설정 - 갤러리 첨부 지원) */}
-      {showAdmin && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
-          <div className="bg-white p-6 rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl">
-            <h2 className="text-2xl font-black mb-2 text-slate-800">🖼️ 이미지 설정</h2>
-            <p className="text-xs text-slate-500 mb-6 bg-slate-100 p-2 rounded">
-              갤러리에서 이미지를 선택하면 기기에 자동으로 저장되며, 게임에 즉시 반영됩니다.
-            </p>
-            
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-              {Object.keys(customImages).map(key => {
-                const isBase64 = customImages[key].startsWith('data:image');
-                return (
-                  <div key={key} className="flex flex-col items-center bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-                    <label className="text-sm font-black capitalize mb-2 text-sky-700">{key}</label>
-                    <img src={customImages[key]} alt={key} className="w-16 h-16 object-cover rounded-lg mb-3 border shadow-inner" />
-                    
-                    <label className="w-full bg-sky-500 hover:bg-sky-600 active:scale-95 text-white text-[11px] font-bold py-2 px-1 rounded-lg cursor-pointer text-center transition-all mb-2 shadow-sm">
-                      📷 갤러리 첨부
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        onChange={(e) => handleFileUpload(key, e)} 
-                        className="hidden" 
-                      />
-                    </label>
-                    
-                    <input 
-                      type="text" 
-                      value={isBase64 ? "갤러리 이미지 적용됨" : customImages[key]} 
-                      onChange={(e) => !isBase64 && handleImageChange(key, e.target.value)}
-                      disabled={isBase64}
-                      placeholder="이미지 URL (선택)"
-                      className={`w-full border border-slate-300 p-1.5 rounded text-[10px] text-center mb-1 ${isBase64 ? 'bg-slate-200 text-slate-500' : 'bg-white'}`}
-                    />
-                    
-                    <button 
-                      onClick={() => handleImageChange(key, DEFAULT_IMAGES[key])}
-                      className="text-[10px] text-rose-500 hover:text-rose-700 underline font-bold mt-1"
-                    >
-                      기본값 복구
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-            
-            <button 
-              onClick={() => setShowAdmin(false)} 
-              className="mt-8 w-full bg-slate-800 hover:bg-slate-700 text-white py-4 rounded-xl font-black text-lg shadow-lg active:scale-95 transition-transform"
-            >
-              설정 완료 및 닫기
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* --- Tooltip Popup (확인 버튼 없는 논블로킹 토스트 알림창) --- */}
-      {tooltipInfo && (
-        <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[90] bg-slate-900/95 border border-sky-500/50 text-white px-6 py-3 rounded-full shadow-2xl text-center pointer-events-none transform transition-all animate-bounce">
-          <h3 className="text-sm font-bold text-sky-300">
-            {tooltipInfo.title} 
-            <span className="text-xs text-slate-200 font-normal ml-2">{tooltipInfo.desc}</span>
-          </h3>
-        </div>
-      )}
-
-      {/* --- 도박: 카드 버리기 안내 모달 --- */}
-      {gambleState === 'discard' && (
-        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[90] bg-rose-600 text-white px-6 py-3 rounded-full shadow-2xl text-center animate-pulse border-2 border-white pointer-events-auto">
-          <h3 className="text-sm font-bold">🎲 도박: 아래 내 패에서 버릴 카드를 1장 클릭하세요!</h3>
-          <button onClick={() => setGambleState(null)} className="text-xs underline mt-1 opacity-80">도박 취소하기</button>
-        </div>
-      )}
-
-      {/* --- 도박: 홀짝 선택 모달 --- */}
-      {gambleState === 'guess' && (
-        <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-800 border-2 border-rose-500 rounded-2xl p-8 w-full max-w-sm shadow-[0_0_40px_rgba(244,63,94,0.4)]">
-            <h2 className="text-3xl font-black text-white text-center mb-2">🎲 10면체 도박</h2>
-            <p className="text-slate-300 text-center text-sm mb-6">주사위(1~10)가 홀수일지 짝수일지 맞혀보세요!<br/>맞히면 전진, 틀리면 후진합니다.</p>
-            <div className="flex gap-4 mb-6">
-              <button onClick={() => executeGamble('odd')} className="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-black py-6 rounded-xl text-xl shadow-lg transition-transform hover:scale-105">홀수<br/><span className="text-sm font-normal">(1,3,5,7,9)</span></button>
-              <button onClick={() => executeGamble('even')} className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-black py-6 rounded-xl text-xl shadow-lg transition-transform hover:scale-105">짝수<br/><span className="text-sm font-normal">(2,4,6,8,10)</span></button>
-            </div>
-            <button onClick={() => { setGambleState(null); setPendingGambleCardIdx(null); }} className="w-full bg-slate-600 hover:bg-slate-500 text-white font-bold py-3 rounded-xl transition-colors">도박 취소</button>
-          </div>
-        </div>
-      )}
-
-      {/* --- 타겟 선택 모달 (가로로 ㅁ ㅁ ㅁ ㅁ 배치, 화면 덮기) --- */}
-      {targetSelectMode && pendingAction && (
-        <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="flex flex-col items-center w-full max-w-2xl">
-            <h2 className="text-3xl font-black text-white text-center mb-2 drop-shadow-lg">대상을 지정하세요</h2>
-            <p className="text-sky-300 text-center text-sm mb-8 font-bold bg-slate-900/80 px-6 py-2 rounded-full border border-slate-600 shadow-xl">
-              사용 카드: [{CARDS[pendingAction.cardId].name}]
-            </p>
-            
-            {/* 캐릭터를 가로로 나열 (ㅁ ㅁ ㅁ ㅁ) */}
-            <div className="flex flex-row flex-wrap justify-center gap-4 sm:gap-6 mb-8 w-full">
-              {roomData.players.map(p => (
-                <button 
-                  key={p.id}
-                  onClick={() => handleTargetSelect(p.id)}
-                  className={`flex flex-col items-center p-4 w-[110px] sm:w-[130px] rounded-2xl border-4 transition-all transform hover:-translate-y-2 hover:scale-105 active:scale-95 shadow-2xl ${p.id === user.uid ? 'bg-green-900/60 border-green-400 hover:bg-green-800' : 'bg-slate-800 border-sky-400 hover:border-sky-300 hover:bg-slate-700'}`}
-                >
-                  <img src={customImages[p.charId]} alt={p.name} className="w-16 h-16 sm:w-20 sm:h-20 rounded-full border-2 border-white/50 object-cover mb-3 shadow-md" />
-                  <span className="text-white font-bold text-sm sm:text-base truncate w-full text-center">{p.name} {p.id === user.uid && <span className="text-green-400 text-xs ml-1">(나)</span>}</span>
-                  <span className="text-xs text-sky-200 font-bold bg-black/50 px-3 py-1 rounded-full mt-2 w-full text-center">위치: {p.position}</span>
-                </button>
-              ))}
-            </div>
-            
-            <button 
-              onClick={() => { setTargetSelectMode(false); setPendingAction(null); }} 
-              className="bg-slate-700 hover:bg-slate-600 text-white font-bold px-10 py-3 rounded-full transition-colors shadow-lg border border-slate-500"
-            >
-              사용 취소
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* --- LOBBY VIEW --- */}
-      {view === 'lobby' && (
-        <div className="flex-1 flex items-center justify-center p-4">
-          <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md text-center">
-            <h1 className="text-3xl font-extrabold text-sky-600 mb-2">하늘나라 마라톤</h1>
-            <p className="text-gray-500 mb-6 text-sm">가장 먼저 목표 칸에 도착하세요!</p>
-            <input type="text" placeholder="닉네임 입력" value={userName} onChange={e => setUserName(e.target.value)} className="w-full border-2 border-sky-200 p-3 rounded-lg mb-4 text-center font-bold" />
-            <button onClick={createRoom} className="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 mb-4">
-              <Play size={20} /> 새 게임 방 만들기
-            </button>
-            <div className="flex gap-2">
-              <input type="text" placeholder="방 코드" value={roomId} onChange={e => setRoomId(e.target.value)} className="flex-1 border-2 border-gray-200 p-3 rounded-lg text-center" />
-              <button onClick={() => joinRoom(roomId)} className="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 px-6 rounded-lg">입장</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* --- CHARACTER SELECT VIEW --- */}
-      {view === 'charSelect' && (
-        <div className="flex-1 flex flex-col items-center p-4">
-          <div className="w-full max-w-4xl bg-white p-6 rounded-2xl shadow-xl mt-10">
-            <div className="flex justify-between items-center mb-6 border-b pb-4">
-              <h2 className="text-xl font-bold">코드: <span className="text-sky-600">{roomId}</span></h2>
-              <div className="flex gap-3 items-center">
-                <div className="flex items-center text-sm font-bold text-gray-700">
-                  <Users size={16} className="mr-1"/> {roomData.players.length} / 4명
-                </div>
-                {roomData.players.length > 0 && roomData.players.length < MAX_PLAYERS && (
-                  <button onClick={addAI} className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-1 rounded text-sm font-bold shadow transition-colors">🤖 AI 추가</button>
-                )}
-              </div>
-            </div>
-
-            {!myPlayer ? (
-              <div className="flex-1">
-                <h3 className="text-lg font-bold mb-4 text-center">캐릭터 선택 (1번: 정보, 2번: 확정)</h3>
-                {roomData.players.length >= MAX_PLAYERS ? (
-                  <div className="text-center text-red-500 font-bold py-10 text-xl">방이 가득 찼습니다! (최대 4명)</div>
-                ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                    {Object.entries(CHARACTERS).map(([key, char]) => {
-                      const isTaken = roomData.players.some(p => p.charId === key);
-                      const isFocused = selectedChar === key;
-                      return (
-                        <div key={key} onClick={() => setSelectedChar(key)} onDoubleClick={() => !isTaken && selectCharacter(key)}
-                          className={`border-2 rounded-xl p-2 cursor-pointer transition-all ${isTaken ? 'opacity-50 bg-gray-100 border-gray-300' : isFocused ? 'border-sky-500 bg-sky-50 scale-105' : 'border-gray-300 bg-white hover:bg-gray-50'} relative`}>
-                          <img src={customImages[key]} alt={char.name} className="w-full h-24 object-cover rounded mb-2" />
-                          <div className="text-center font-bold text-sm">{char.name}</div>
-                          {isTaken && <div className="absolute inset-0 flex items-center justify-center font-black text-red-600 bg-white/60 rounded-xl">선택됨</div>}
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-                <div className="mt-4 min-h-[90px] bg-sky-50 rounded-lg border border-sky-200 p-3 text-center">
-                  {selectedChar ? (
-                    <>
-                      <h4 className="font-bold text-sky-800">{CHARACTERS[selectedChar].name} <span className="text-xs bg-white px-2 py-0.5 rounded-full border border-gray-300 ml-1">속도: {CHARACTERS[selectedChar].speed}</span></h4>
-                      <p className="text-sm text-gray-700 mt-1">{CHARACTERS[selectedChar].ability}</p>
-                      <p className="text-xs text-purple-600 mt-1 font-bold">⚡ 각성: {CHARACTERS[selectedChar].awaken}</p>
-                    </>
-                  ) : <p className="text-sm text-gray-500 pt-4">캐릭터를 누르면 능력이 표시됩니다.</p>}
-                </div>
-              </div>
-            ) : (
-              <div className="text-center py-10">
-                <CheckCircle2 size={48} className="text-green-500 mx-auto mb-2" />
-                <h3 className="text-xl font-bold text-sky-700">준비 완료!</h3>
-                <p className="text-sm text-gray-600 mt-1">선택: {CHARACTERS[myPlayer.charId].name}</p>
-              </div>
-            )}
-            {roomData.players.length > 0 && (
-              <div className="mt-6 flex justify-center">
-                <button onClick={startGame} className="bg-green-500 text-white px-12 py-3 rounded-full font-bold text-lg shadow-lg hover:bg-green-600 animate-pulse">
-                  게임 시작
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* --- GAME VIEW (VERTICAL SCROLL LAYOUT) --- */}
-      {view === 'game' && myPlayer && (
-        <div className="flex flex-col w-full">
+        if (targetPlayer.isShielded && targetUserId !== user.uid) {
+          addLog(`${targetName}님은 천사의 보호를 받고 있어 효과가 무효화되었습니다!`);
+        } else {
+          let moveAmt = 0;
+          if (cardId === 'zikooter') moveAmt = -2;
+          if (cardId === 'bicycle') moveAmt = -3;
+          if (cardId === 'devil') moveAmt = -6;
+          if (cardId === 'angel') moveAmt = 3; 
+          if (cardId === 'overpace') moveAmt = 5;
+          if (cardId === 'timeWarp') moveAmt = roomData.lastMoveAmount || 0;
           
-          {/* 1. 상단: 상대방 정보 (가로 스크롤 가능) */}
-          <div className="w-full bg-slate-900 p-3 sm:p-4 shrink-0 flex gap-3 sm:gap-4 overflow-x-auto shadow-md z-20 border-b-2 border-slate-700">
-            {opponents.length === 0 ? (
-              <div className="text-white/50 font-bold text-sm p-2">기다리는 중...</div>
-            ) : (
-              opponents.map(opp => (
-                <div key={opp.id} className="flex items-center gap-2 sm:gap-3 bg-slate-800 p-2 sm:p-3 rounded-xl border border-slate-600 min-w-[200px] shrink-0">
-                  <div className="relative">
-                    <img src={customImages[opp.charId]} alt={opp.name} className={`w-12 h-12 rounded-full border-2 object-cover ${roomData.players[roomData.turnIndex].id === opp.id ? 'border-green-400' : 'border-sky-300'}`} />
-                    <div className="absolute -bottom-1 -right-1 bg-gray-900 text-white text-[10px] font-bold px-1.5 rounded-full border border-gray-600">{opp.position}칸</div>
-                  </div>
-                  <div className="text-white flex-1">
-                    <div className="font-bold text-xs sm:text-sm truncate w-20">{opp.name}</div>
-                    <div className="text-[10px] sm:text-xs text-sky-300">목표: {opp.targetsReached}/2</div>
-                  </div>
-                  <div className="flex -space-x-2 sm:-space-x-3 ml-1">
-                    {opp.hand.map((_, i) => (
-                      <img key={i} src={customImages.cardBack} className="w-6 h-9 sm:w-8 sm:h-12 object-cover rounded border border-gray-500 shadow" alt=""/>
-                    ))}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+          if (moveAmt !== 0) {
+             newPlayers = movePlayer(newPlayers, targetUserId, moveAmt);
+             addLog(`${userName}님이 ${CARDS[cardId].name} 사용! ${targetName} ${moveAmt > 0 ? '+'+moveAmt : moveAmt}칸 이동.`);
+          }
+          if (cardId === 'timeRewind') {
+             newPlayers = newPlayers.map(p => p.id === targetUserId ? {...p, position: p.prevPosition} : p);
+             addLog(`${userName}님이 시간 역행 사용! ${targetName}님이 이전 위치로 돌아갑니다.`);
+          }
+          if (cardId === 'trafficLight') addLog(`${userName}님이 신호등 사용! ${targetName}님 발이 묶입니다.`);
+        }
 
-          {/* 2. 중앙: 구름 보드판 영역 */}
-          <div className="w-full relative shadow-inner z-10 bg-sky-100 border-b-4 border-sky-200">
-             
-             {/* 상단 중앙: 직전 플레이어 이동 수치 (이벤트 숫자) 표시 */}
-             <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-indigo-900/90 backdrop-blur-sm border-2 border-indigo-400 text-white px-6 py-2 rounded-full shadow-[0_0_20px_rgba(99,102,241,0.6)] z-50 flex items-center gap-3">
-                <span className="text-xs sm:text-sm font-bold text-indigo-200">⏱️ 직전 턴 이동:</span>
-                <span className="text-lg sm:text-xl font-black text-white">{roomData.lastMoveAmount}칸</span>
-             </div>
+        newPlayers = newPlayers.map(p => {
+          if (p.id === user.uid) {
+            const newHand = [...p.hand]; newHand.splice(cardIdx, 1);
+            return { ...p, hand: newHand, cardsUsedThisTurn: p.cardsUsedThisTurn + 1 };
+          }
+          return p;
+        });
+        await updatePlayers(newPlayers);
+      };
 
-             {/* 가로 스크롤 영역 (스마트폰 좌우 스크롤 지원) */}
-             <div className="w-full flex justify-start lg:justify-center overflow-x-auto overflow-y-hidden py-8 px-4 scrollbar-hide">
-               {/* The Wide Board Container */}
-               <div className="relative w-[700px] h-[360px] sm:w-[900px] sm:h-[450px] shrink-0 shadow-2xl rounded-3xl border-4 border-sky-300 mx-auto"
-                    style={{ backgroundImage: `url(${customImages.board})`, backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}>
-                 
-                 {/* Board Nodes */}
-                 {[...Array(TOTAL_CELLS)].map((_, i) => {
-                    const pos = calculateBoardPosition(i);
-                    const playersHere = roomData.players.filter(p => p.position === i);
+      const handleBaseMove = async () => {
+        if(!isMyTurn || myPlayer.hasMovedThisTurn) return;
+        const charData = CHARACTERS[myPlayer.charId];
+        let newPlayers = movePlayer(roomData.players, user.uid, charData.speed);
+        newPlayers = newPlayers.map(p => p.id === user.uid ? {...p, hasMovedThisTurn: true} : p);
+        await updatePlayers(newPlayers, { lastMoveAmount: charData.speed });
+        addLog(`${userName}님이 기본 이동으로 ${charData.speed}칸 전진했습니다.`);
+      };
+
+      const handleGambleClick = () => {
+        if (!isMyTurn) return;
+        if (myPlayer.hand.length === 0) return alert("버릴 카드가 없어서 도박을 할 수 없습니다!");
+        setGambleState('discard');
+      };
+
+      const executeGamble = async (guess) => {
+        const roll = Math.floor(Math.random() * 10) + 1; 
+        const isOdd = roll % 2 !== 0;
+        const isSuccess = (guess === 'odd' && isOdd) || (guess === 'even' && !isOdd);
+        let moveAmt = isSuccess ? roll : -roll;
+        
+        let newPlayers = [...roomData.players];
+        newPlayers = newPlayers.map(p => {
+          if (p.id === user.uid) {
+            const newHand = [...p.hand]; newHand.splice(pendingGambleCardIdx, 1);
+            return { ...p, hand: newHand };
+          }
+          return p;
+        });
+        
+        newPlayers = movePlayer(newPlayers, user.uid, moveAmt);
+        await updatePlayers(newPlayers, { lastMoveAmount: Math.abs(moveAmt) });
+        addLog(`🎲 도박: [${guess === 'odd' ? '홀' : '짝'}] 선택 -> 주사위 [${roll}]! ${isSuccess ? '대성공! 앞으로' : '실패... 뒤로'} ${Math.abs(moveAmt)}칸 이동.`);
+        setGambleState(null); setPendingGambleCardIdx(null);
+      };
+
+      const endTurn = async () => {
+        if (!isMyTurn) return;
+        let nextIndex = (roomData.turnIndex + 1) % roomData.players.length;
+        let newPlayers = [...roomData.players];
+        newPlayers = newPlayers.map(p => {
+            if(p.id === user.uid) return {...p, hasMovedThisTurn: false, cardsUsedThisTurn: 0, overpaceUsedThisTurn: false};
+            return p;
+        });
+        const { drawn, newDeck } = drawCards(roomData.deck, 1);
+        newPlayers[nextIndex].hand.push(...drawn);
+        await updatePlayers(newPlayers, { turnIndex: nextIndex, deck: newDeck });
+        addLog(`턴이 종료되었습니다. 다음 차례입니다.`);
+      };
+
+      const calculateBoardPosition = (index) => {
+        const angle = Math.PI / 2 + (index / TOTAL_CELLS) * 2 * Math.PI; 
+        const rx = 45; const ry = 35;
+        return { left: `calc(50% + ${rx * Math.cos(angle)}%)`, top: `calc(50% + ${ry * Math.sin(angle)}%)` };
+      };
+
+      if (!user) return <div className="flex justify-center items-center h-screen bg-sky-50 text-sky-800 font-bold">서버 연결 중...</div>;
+      const opponents = roomData?.players.filter(p => p.id !== user?.uid) || [];
+
+      return (
+        <div className="h-full w-full flex flex-col relative bg-sky-50">
+          <button onClick={() => setShowAdmin(true)} className="absolute top-4 left-4 z-50 p-2 bg-white rounded-full shadow-md hover:bg-gray-100">
+            <Settings size={20} className="text-gray-600" />
+          </button>
+
+          {showAdmin && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4">
+              <div className="bg-white p-6 rounded-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl">
+                <h2 className="text-2xl font-black mb-2 text-slate-800">🖼️ 이미지 설정</h2>
+                <p className="text-xs text-slate-500 mb-6 bg-slate-100 p-2 rounded">갤러리에서 이미지를 선택하면 기기에 자동으로 저장되며, 게임에 즉시 반영됩니다.</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                  {Object.keys(customImages).map(key => {
+                    const isBase64 = customImages[key].startsWith('data:image');
                     return (
-                      <div key={i} className="absolute flex items-center justify-center transition-all duration-300" 
-                           style={{ left: pos.left, top: pos.top, width: '40px', height: '40px', transform: 'translate(-50%, -50%)' }}>
-                        
-                        <div className="absolute inset-0 bg-white/90 shadow-sm" style={{ borderRadius: '40% 60% 70% 30% / 40% 50% 60% 50%' }}></div>
-                        <span className="relative z-10 font-bold text-sky-800 text-xs sm:text-sm drop-shadow-md">{i}</span>
-                        
-                        {playersHere.length > 0 && (
-                          <div className="absolute -top-4 -right-4 flex gap-0.5 z-30">
-                            {playersHere.map(p => (
-                              <img key={p.id} src={customImages[p.charId]} alt={p.name}
-                                   className={`w-6 h-6 sm:w-8 sm:h-8 rounded-full border-2 ${p.id === user.uid ? 'border-yellow-400' : 'border-sky-400'} shadow-md object-cover bg-white`}
-                              />
-                            ))}
-                          </div>
-                        )}
+                      <div key={key} className="flex flex-col items-center bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+                        <label className="text-sm font-black capitalize mb-2 text-sky-700">{key}</label>
+                        <img src={customImages[key]} alt={key} className="w-16 h-16 object-cover rounded-lg mb-3 border shadow-inner" />
+                        <label className="w-full bg-sky-500 hover:bg-sky-600 active:scale-95 text-white text-[11px] font-bold py-2 px-1 rounded-lg cursor-pointer text-center transition-all mb-2 shadow-sm">
+                          📷 갤러리 첨부
+                          <input type="file" accept="image/*" onChange={(e) => handleFileUpload(key, e)} className="hidden" />
+                        </label>
+                        <input type="text" value={isBase64 ? "갤러리 이미지 적용됨" : customImages[key]} onChange={(e) => !isBase64 && handleImageChange(key, e.target.value)} disabled={isBase64} placeholder="이미지 URL" className={`w-full border border-slate-300 p-1.5 rounded text-[10px] text-center mb-1 ${isBase64 ? 'bg-slate-200 text-slate-500' : 'bg-white'}`}/>
+                        <button onClick={() => handleImageChange(key, DEFAULT_IMAGES[key])} className="text-[10px] text-rose-500 hover:text-rose-700 underline font-bold mt-1">기본값 복구</button>
                       </div>
-                    );
-                 })}
-               </div>
-             </div>
-          </div>
-
-          {/* 3. 하단: 내 정보, 패, 로그 영역 */}
-          <div className="w-full bg-slate-800 p-4 shrink-0 flex flex-col gap-4 shadow-[0_-10px_20px_rgba(0,0,0,0.3)] z-20 pb-10">
-             
-             {/* 상태 및 로그 (2열 구조) */}
-             <div className="flex flex-col sm:flex-row gap-4">
-                {/* 내 상태 창 */}
-                <div className={`flex-1 p-3 rounded-xl border-2 flex items-center gap-4 ${isMyTurn ? 'bg-green-900/40 border-green-400' : 'bg-slate-700 border-slate-600'}`}>
-                   <div className="relative shrink-0">
-                     <img src={customImages[myPlayer.charId]} alt="Me" className={`w-14 h-14 rounded-full object-cover border-2 ${isMyTurn ? 'border-green-400' : 'border-sky-400'}`} />
-                     {isMyTurn && <div className="absolute -top-2 -right-2 bg-green-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full animate-bounce">내 턴!</div>}
-                   </div>
-                   <div className="flex-1 text-white">
-                      <div className="font-bold text-sm sm:text-base">{myPlayer.name} <span className="text-xs text-sky-300 font-normal ml-1">({CHARACTERS[myPlayer.charId].name})</span></div>
-                      <div className="grid grid-cols-3 gap-1 mt-1 text-xs text-center">
-                         <div className="bg-slate-800 rounded py-1">위치: <b className="text-sm">{myPlayer.position}</b></div>
-                         <div className="bg-slate-800 rounded py-1 text-rose-300">목표: <b>{myPlayer.targets.join(', ')}</b></div>
-                         <div className="bg-slate-800 rounded py-1">달성: <b>{myPlayer.targetsReached}/2</b></div>
-                      </div>
-                   </div>
+                    )
+                  })}
                 </div>
+                <button onClick={() => setShowAdmin(false)} className="mt-8 w-full bg-slate-800 hover:bg-slate-700 text-white py-4 rounded-xl font-black text-lg shadow-lg active:scale-95 transition-transform">설정 완료 및 닫기</button>
+              </div>
+            </div>
+          )}
 
-                {/* 게임 로그 창 */}
-                <div className="flex-1 bg-black/40 rounded-xl p-3 border border-slate-600 flex flex-col max-h-[90px] overflow-hidden">
-                  <h3 className="text-xs text-slate-400 font-bold mb-1">📝 게임 로그</h3>
-                  <div className="flex-1 overflow-y-auto text-[11px] text-slate-300 space-y-1">
-                    {roomData.logs.slice(-5).map((log, i) => <div key={i}>• {log}</div>)}
+          {tooltipInfo && (
+            <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[90] bg-slate-900/95 border border-sky-500/50 text-white px-6 py-3 rounded-full shadow-2xl text-center pointer-events-none animate-bounce whitespace-nowrap">
+              <h3 className="text-sm font-bold text-sky-300">{tooltipInfo.title} <span className="text-xs text-slate-200 font-normal ml-2">{tooltipInfo.desc}</span></h3>
+            </div>
+          )}
+
+          {gambleState === 'discard' && (
+            <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[90] bg-rose-600 text-white px-6 py-3 rounded-full shadow-2xl text-center animate-pulse border-2 border-white pointer-events-auto">
+              <h3 className="text-sm font-bold">🎲 도박: 아래 내 패에서 버릴 카드를 1장 클릭하세요!</h3>
+              <button onClick={() => setGambleState(null)} className="text-xs underline mt-1 opacity-80">취소</button>
+            </div>
+          )}
+
+          {gambleState === 'guess' && (
+            <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+              <div className="bg-slate-800 border-2 border-rose-500 rounded-2xl p-8 w-full max-w-sm shadow-[0_0_40px_rgba(244,63,94,0.4)]">
+                <h2 className="text-3xl font-black text-white text-center mb-2">🎲 10면체 도박</h2>
+                <p className="text-slate-300 text-center text-sm mb-6">주사위(1~10) 홀짝 맞히기!<br/>성공 시 전진, 실패 시 후진</p>
+                <div className="flex gap-4 mb-6">
+                  <button onClick={() => executeGamble('odd')} className="flex-1 bg-sky-600 hover:bg-sky-500 text-white font-black py-6 rounded-xl text-xl shadow-lg transition-transform hover:scale-105">홀수<br/><span className="text-sm font-normal">(1,3,5,7,9)</span></button>
+                  <button onClick={() => executeGamble('even')} className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-black py-6 rounded-xl text-xl shadow-lg transition-transform hover:scale-105">짝수<br/><span className="text-sm font-normal">(2,4,6,8,10)</span></button>
+                </div>
+                <button onClick={() => { setGambleState(null); setPendingGambleCardIdx(null); }} className="w-full bg-slate-600 hover:bg-slate-500 text-white font-bold py-3 rounded-xl transition-colors">취소</button>
+              </div>
+            </div>
+          )}
+
+          {targetSelectMode && pendingAction && (
+            <div className="fixed inset-0 z-[110] flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+              <div className="flex flex-col items-center w-full max-w-2xl">
+                <h2 className="text-3xl font-black text-white text-center mb-2 drop-shadow-lg">대상을 지정하세요</h2>
+                <p className="text-sky-300 text-center text-sm mb-8 font-bold bg-slate-900/80 px-6 py-2 rounded-full border border-slate-600 shadow-xl">사용 카드: [{CARDS[pendingAction.cardId].name}]</p>
+                <div className="flex flex-row flex-wrap justify-center gap-4 sm:gap-6 mb-8 w-full">
+                  {roomData.players.map(p => (
+                    <button key={p.id} onClick={() => handleTargetSelect(p.id)} className={`flex flex-col items-center p-4 w-[110px] sm:w-[130px] rounded-2xl border-4 transition-all transform hover:-translate-y-2 hover:scale-105 active:scale-95 shadow-2xl ${p.id === user.uid ? 'bg-green-900/60 border-green-400 hover:bg-green-800' : 'bg-slate-800 border-sky-400 hover:border-sky-300 hover:bg-slate-700'}`}>
+                      <img src={customImages[p.charId]} alt={p.name} className="w-16 h-16 sm:w-20 sm:h-20 rounded-full border-2 border-white/50 object-cover mb-3 shadow-md" />
+                      <span className="text-white font-bold text-sm sm:text-base truncate w-full text-center">{p.name} {p.id === user.uid && <span className="text-green-400 text-xs ml-1">(나)</span>}</span>
+                      <span className="text-xs text-sky-200 font-bold bg-black/50 px-3 py-1 rounded-full mt-2 w-full text-center">위치: {p.position}</span>
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => { setTargetSelectMode(false); setPendingAction(null); }} className="bg-slate-700 hover:bg-slate-600 text-white font-bold px-10 py-3 rounded-full transition-colors shadow-lg border border-slate-500">사용 취소</button>
+              </div>
+            </div>
+          )}
+
+          {view === 'lobby' && (
+            <div className="flex-1 flex items-center justify-center p-4">
+              <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md text-center">
+                <h1 className="text-3xl font-extrabold text-sky-600 mb-2">하늘나라 마라톤</h1>
+                <p className="text-gray-500 mb-6 text-sm">가장 먼저 목표 칸에 도착하세요!</p>
+                <input type="text" placeholder="닉네임 입력" value={userName} onChange={e => setUserName(e.target.value)} className="w-full border-2 border-sky-200 p-3 rounded-lg mb-4 text-center font-bold" />
+                <button onClick={createRoom} className="w-full bg-sky-500 hover:bg-sky-600 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 mb-4"><Play size={20} /> 새 게임 방 만들기</button>
+                <div className="flex gap-2">
+                  <input type="text" placeholder="방 코드" value={roomId} onChange={e => setRoomId(e.target.value)} className="flex-1 border-2 border-gray-200 p-3 rounded-lg text-center font-bold uppercase" />
+                  <button onClick={() => joinRoom(roomId)} className="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-3 px-6 rounded-lg">입장</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {view === 'charSelect' && (
+            <div className="flex-1 flex flex-col items-center overflow-y-auto p-4">
+              <div className="w-full max-w-4xl bg-white p-6 rounded-2xl shadow-xl mt-4 sm:mt-10 mb-10">
+                <div className="flex justify-between items-center mb-6 border-b pb-4">
+                  <h2 className="text-lg sm:text-xl font-bold">코드: <span className="text-sky-600">{roomId}</span></h2>
+                  <div className="flex gap-3 items-center">
+                    <div className="flex items-center text-sm font-bold text-gray-700"><Users size={16} className="mr-1"/> {roomData.players.length} / {MAX_PLAYERS}명</div>
+                    {roomData.players.length > 0 && roomData.players.length < MAX_PLAYERS && (
+                      <button onClick={addAI} className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-1 rounded text-sm font-bold shadow transition-colors">🤖 AI 추가</button>
+                    )}
                   </div>
                 </div>
-             </div>
 
-             {/* 내 카드 패 영역 */}
-             <div>
-                <div className="flex justify-between items-end mb-2 px-1 text-white">
-                   <h3 className="font-bold text-sm">내 패 (1번 터치: 알림, 2번 터치: 사용)</h3>
-                   <span className="text-xs text-sky-300 bg-slate-900 px-2 py-0.5 rounded">사용: {myPlayer.cardsUsedThisTurn}/2</span>
-                </div>
-                
-                <div className="flex flex-wrap gap-2 sm:gap-3 bg-slate-700/50 p-3 rounded-xl border border-slate-600 min-h-[120px]">
-                  {myPlayer.hand.length === 0 ? (
-                    <div className="w-full flex items-center justify-center text-slate-400 font-bold text-sm">카드가 없습니다.</div>
-                  ) : (
-                    myPlayer.hand.map((cardId, idx) => {
-                      const card = CARDS[cardId];
-                      return (
-                        <div key={idx}
-                             onClick={() => {
-                               if (gambleState === 'discard') {
-                                 setPendingGambleCardIdx(idx);
-                                 setGambleState('guess');
-                               } else {
-                                 setTooltipInfo({ title: card.name, desc: card.desc });
-                               }
-                             }}
-                             onDoubleClick={() => {
-                               if (gambleState !== 'discard') handleDoubleClickCard(idx, cardId);
-                             }}
-                             className={`w-[70px] h-[100px] sm:w-[90px] sm:h-[130px] rounded-lg flex flex-col cursor-pointer shadow-md transform transition-all overflow-hidden ${gambleState === 'discard' ? 'border-4 border-rose-500 hover:scale-110 animate-pulse bg-rose-100' : 'border border-gray-400 bg-gray-100 hover:-translate-y-2'}`}>
-                          <img src={customImages[cardId]} className="w-full h-1/2 sm:h-[60%] object-cover border-b border-gray-400" alt=""/>
-                          <div className="p-1 flex-1 flex items-center justify-center bg-white">
-                            <span className="font-black text-[10px] sm:text-xs text-gray-800 text-center leading-tight break-keep">{card.name}</span>
-                          </div>
-                        </div>
-                      )
-                    })
-                  )}
-                </div>
-             </div>
-
-             {/* 액션 및 토큰 버튼 */}
-             <div className="flex flex-col sm:flex-row gap-2 mt-1">
-                {/* 토큰 버튼 영역 */}
-                <div className="flex gap-2 w-full sm:w-1/3">
-                  <button onClick={() => setTooltipInfo({ title: '오버페이스 토큰', desc: '현재 +5칸 이동' })}
-                          onDoubleClick={() => handleTokenUse('overpace')}
-                          className="flex-1 bg-orange-500/20 border border-orange-500 text-orange-400 text-xs font-bold py-2 rounded-lg hover:bg-orange-500/40">
-                    🔥 오버페이스 (x{myPlayer.overpaceTokens})
-                  </button>
-                  <button onClick={() => setTooltipInfo({ title: '각성 토큰', desc: CHARACTERS[myPlayer.charId].awaken })}
-                          onDoubleClick={() => handleTokenUse('awaken')}
-                          className={`flex-1 text-xs font-bold py-2 rounded-lg border ${myPlayer.targetsReached > 0 ? 'bg-purple-500/20 border-purple-500 text-purple-400 hover:bg-purple-500/40' : 'bg-gray-800 border-gray-600 text-gray-500'}`}>
-                    ⚡ 각성 (x{myPlayer.awakenToken})
-                  </button>
-                </div>
-
-                {/* 메인 턴 조작 버튼 */}
-                {isMyTurn ? (
-                  <div className="flex gap-2 w-full sm:w-2/3">
-                    <button onClick={handleBaseMove} disabled={myPlayer.hasMovedThisTurn} className="flex-[2] bg-sky-500 disabled:bg-slate-600 disabled:text-slate-400 text-white font-bold py-3 rounded-lg shadow-md active:scale-95 transition-transform text-sm">
-                      기본 이동 ({CHARACTERS[myPlayer.charId].speed}칸)
-                    </button>
-                    <button onClick={handleGambleClick} className="flex-1 bg-rose-600 text-white font-bold py-3 rounded-lg shadow-md text-sm active:scale-95">🎲 도박</button>
-                    <button onClick={endTurn} className="flex-1 bg-gray-600 text-white font-bold py-3 rounded-lg shadow-md text-sm active:scale-95 border border-gray-500">턴 종료</button>
+                {!myPlayer ? (
+                  <div className="flex-1">
+                    <h3 className="text-lg font-bold mb-4 text-center">캐릭터 선택 (1번: 정보, 2번: 확정)</h3>
+                    {roomData.players.length >= MAX_PLAYERS ? (
+                      <div className="text-center text-red-500 font-bold py-10 text-xl">방이 가득 찼습니다! (최대 4명)</div>
+                    ) : (
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                        {Object.entries(CHARACTERS).map(([key, char]) => {
+                          const isTaken = roomData.players.some(p => p.charId === key);
+                          const isFocused = selectedChar === key;
+                          return (
+                            <div key={key} onClick={() => setSelectedChar(key)} onDoubleClick={() => !isTaken && selectCharacter(key)}
+                              className={`border-2 rounded-xl p-2 cursor-pointer transition-all ${isTaken ? 'opacity-50 bg-gray-100 border-gray-300' : isFocused ? 'border-sky-500 bg-sky-50 scale-105' : 'border-gray-300 bg-white hover:bg-gray-50'} relative`}>
+                              <img src={customImages[key]} alt={char.name} className="w-full h-20 sm:h-24 object-cover rounded mb-2" />
+                              <div className="text-center font-bold text-sm">{char.name}</div>
+                              {isTaken && <div className="absolute inset-0 flex items-center justify-center font-black text-red-600 bg-white/60 rounded-xl">선택됨</div>}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                    <div className="mt-4 min-h-[90px] bg-sky-50 rounded-lg border border-sky-200 p-3 text-center">
+                      {selectedChar ? (
+                        <>
+                          <h4 className="font-bold text-sky-800">{CHARACTERS[selectedChar].name} <span className="text-xs bg-white px-2 py-0.5 rounded-full border border-gray-300 ml-1">속도: {CHARACTERS[selectedChar].speed}</span></h4>
+                          <p className="text-sm text-gray-700 mt-1">{CHARACTERS[selectedChar].ability}</p>
+                          <p className="text-xs text-purple-600 mt-1 font-bold">⚡ 각성: {CHARACTERS[selectedChar].awaken}</p>
+                        </>
+                      ) : <p className="text-sm text-gray-500 pt-4">캐릭터를 누르면 능력이 표시됩니다.</p>}
+                    </div>
                   </div>
                 ) : (
-                  <div className="flex gap-2 w-full sm:w-2/3">
-                    <div className="flex-1 bg-slate-800 border border-slate-600 text-slate-400 font-bold py-3 rounded-lg text-center text-sm">상대방의 턴을 기다리는 중...</div>
+                  <div className="text-center py-10">
+                    <CheckCircle2 size={48} className="text-green-500 mx-auto mb-2" />
+                    <h3 className="text-xl font-bold text-sky-700">준비 완료!</h3>
+                    <p className="text-sm text-gray-600 mt-1">선택: {CHARACTERS[myPlayer.charId].name}</p>
                   </div>
                 )}
-             </div>
+                {roomData.players.length > 0 && (
+                  <div className="mt-6 flex justify-center">
+                    <button onClick={startGame} className="bg-green-500 text-white px-12 py-3 rounded-full font-bold text-lg shadow-lg hover:bg-green-600 animate-pulse">게임 시작</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
-          </div>
+          {view === 'game' && myPlayer && (
+            <div className="flex flex-col h-full overflow-hidden">
+              <div className="w-full bg-slate-900 p-3 shrink-0 flex gap-3 overflow-x-auto shadow-md z-20 border-b-2 border-slate-700">
+                {opponents.length === 0 ? (
+                  <div className="text-white/50 font-bold text-sm p-2">기다리는 중...</div>
+                ) : (
+                  opponents.map(opp => (
+                    <div key={opp.id} className="flex items-center gap-2 sm:gap-3 bg-slate-800 p-2 sm:p-3 rounded-xl border border-slate-600 min-w-[200px] shrink-0">
+                      <div className="relative">
+                        <img src={customImages[opp.charId]} alt={opp.name} className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 object-cover ${roomData.players[roomData.turnIndex].id === opp.id ? 'border-green-400' : 'border-sky-300'}`} />
+                        <div className="absolute -bottom-1 -right-1 bg-gray-900 text-white text-[10px] font-bold px-1.5 rounded-full border border-gray-600">{opp.position}칸</div>
+                      </div>
+                      <div className="text-white flex-1">
+                        <div className="font-bold text-xs sm:text-sm truncate w-20">{opp.name}</div>
+                        <div className="text-[10px] sm:text-xs text-sky-300">목표: {opp.targetsReached}/2</div>
+                      </div>
+                      <div className="flex -space-x-2 sm:-space-x-3 ml-1">
+                        {opp.hand.map((_, i) => <img key={i} src={customImages.cardBack} className="w-6 h-9 sm:w-8 sm:h-12 object-cover rounded border border-gray-500 shadow" alt=""/>)}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="flex-1 w-full relative shadow-inner z-10 bg-sky-100 border-b-4 border-sky-200 flex flex-col justify-center">
+                 <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-indigo-900/90 backdrop-blur-sm border-2 border-indigo-400 text-white px-4 py-1.5 rounded-full shadow-[0_0_20px_rgba(99,102,241,0.6)] z-50 flex items-center gap-2">
+                    <span className="text-xs font-bold text-indigo-200">⏱️ 직전 턴 이동:</span>
+                    <span className="text-sm font-black text-white">{roomData.lastMoveAmount}칸</span>
+                 </div>
+                 <div className="w-full flex justify-start lg:justify-center overflow-x-auto overflow-y-hidden py-4 px-4 scrollbar-hide">
+                   <div className="relative w-[700px] h-[360px] sm:w-[900px] sm:h-[450px] shrink-0 shadow-2xl rounded-3xl border-4 border-sky-300 mx-auto"
+                        style={{ backgroundImage: `url(${customImages.board})`, backgroundSize: '100% 100%', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}>
+                     {[...Array(TOTAL_CELLS)].map((_, i) => {
+                        const pos = calculateBoardPosition(i);
+                        const playersHere = roomData.players.filter(p => p.position === i);
+                        return (
+                          <div key={i} className="absolute flex items-center justify-center transition-all duration-300" style={{ left: pos.left, top: pos.top, width: '40px', height: '40px', transform: 'translate(-50%, -50%)' }}>
+                            <div className="absolute inset-0 bg-white/90 shadow-sm" style={{ borderRadius: '40% 60% 70% 30% / 40% 50% 60% 50%' }}></div>
+                            <span className="relative z-10 font-bold text-sky-800 text-xs drop-shadow-md">{i}</span>
+                            {playersHere.length > 0 && (
+                              <div className="absolute -top-3 -right-3 flex gap-0.5 z-30">
+                                {playersHere.map(p => (
+                                  <img key={p.id} src={customImages[p.charId]} alt={p.name} className={`w-6 h-6 sm:w-7 sm:h-7 rounded-full border-2 ${p.id === user.uid ? 'border-yellow-400' : 'border-sky-400'} shadow-md object-cover bg-white`} />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                     })}
+                   </div>
+                 </div>
+              </div>
+
+              <div className="w-full bg-slate-800 p-3 sm:p-4 shrink-0 flex flex-col gap-3 shadow-[0_-10px_20px_rgba(0,0,0,0.3)] z-20 pb-6 overflow-y-auto max-h-[50vh]">
+                 <div className="flex flex-col sm:flex-row gap-3">
+                    <div className={`flex-[1.5] p-2 rounded-xl border-2 flex items-center gap-3 ${isMyTurn ? 'bg-green-900/40 border-green-400' : 'bg-slate-700 border-slate-600'}`}>
+                       <div className="relative shrink-0">
+                         <img src={customImages[myPlayer.charId]} alt="Me" className={`w-12 h-12 rounded-full object-cover border-2 ${isMyTurn ? 'border-green-400' : 'border-sky-400'}`} />
+                         {isMyTurn && <div className="absolute -top-1 -right-1 bg-green-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full animate-bounce">내 턴!</div>}
+                       </div>
+                       <div className="flex-1 text-white">
+                          <div className="font-bold text-sm">{myPlayer.name} <span className="text-[10px] text-sky-300 font-normal">({CHARACTERS[myPlayer.charId].name})</span></div>
+                          <div className="grid grid-cols-3 gap-1 mt-1 text-[10px] text-center">
+                             <div className="bg-slate-800 rounded py-0.5">위치: <b className="text-xs">{myPlayer.position}</b></div>
+                             <div className="bg-slate-800 rounded py-0.5 text-rose-300">목표: <b>{myPlayer.targets.join(',')}</b></div>
+                             <div className="bg-slate-800 rounded py-0.5">달성: <b>{myPlayer.targetsReached}/2</b></div>
+                          </div>
+                       </div>
+                    </div>
+                    <div className="flex-1 bg-black/40 rounded-xl p-2 border border-slate-600 flex flex-col max-h-[60px] sm:max-h-[80px] overflow-hidden">
+                      <h3 className="text-[10px] text-slate-400 font-bold mb-1">📝 게임 로그</h3>
+                      <div className="flex-1 overflow-y-auto text-[10px] text-slate-300 space-y-0.5">
+                        {roomData.logs.slice(-4).map((log, i) => <div key={i}>• {log}</div>)}
+                      </div>
+                    </div>
+                 </div>
+
+                 <div>
+                    <div className="flex justify-between items-end mb-1 px-1 text-white">
+                       <h3 className="font-bold text-xs sm:text-sm">내 패 (1터치: 정보, 2터치: 사용)</h3>
+                       <span className="text-[10px] text-sky-300 bg-slate-900 px-1.5 py-0.5 rounded">사용: {myPlayer.cardsUsedThisTurn}/2</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 bg-slate-700/50 p-2 rounded-xl border border-slate-600 min-h-[90px]">
+                      {myPlayer.hand.length === 0 ? (
+                        <div className="w-full flex items-center justify-center text-slate-400 font-bold text-sm">카드가 없습니다.</div>
+                      ) : (
+                        myPlayer.hand.map((cardId, idx) => {
+                          const card = CARDS[cardId];
+                          return (
+                            <div key={idx} onClick={() => { if (gambleState === 'discard') { setPendingGambleCardIdx(idx); setGambleState('guess'); } else setTooltipInfo({ title: card.name, desc: card.desc }); }} onDoubleClick={() => { if (gambleState !== 'discard') handleDoubleClickCard(idx, cardId); }}
+                                 className={`w-[60px] h-[85px] sm:w-[80px] sm:h-[115px] rounded-lg flex flex-col cursor-pointer shadow-md transform transition-all overflow-hidden ${gambleState === 'discard' ? 'border-4 border-rose-500 hover:scale-110 animate-pulse bg-rose-100' : 'border border-gray-400 bg-gray-100 hover:-translate-y-1'}`}>
+                              <img src={customImages[cardId]} className="w-full h-1/2 sm:h-[60%] object-cover border-b border-gray-400" alt=""/>
+                              <div className="p-1 flex-1 flex items-center justify-center bg-white">
+                                <span className="font-black text-[9px] sm:text-[10px] text-gray-800 text-center leading-tight break-keep">{card.name}</span>
+                              </div>
+                            </div>
+                          )
+                        })
+                      )}
+                    </div>
+                 </div>
+
+                 <div className="flex flex-col sm:flex-row gap-2">
+                    <div className="flex gap-2 w-full sm:w-1/3">
+                      <button onClick={() => setTooltipInfo({ title: '오버페이스 토큰', desc: '+5칸 (턴당 1회)' })} onDoubleClick={() => handleTokenUse('overpace')} className={`flex-1 text-[10px] font-bold py-2 rounded-lg border ${myPlayer.overpaceUsedThisTurn ? 'bg-gray-800 border-gray-600 text-gray-500' : 'bg-orange-500/20 border-orange-500 text-orange-400 hover:bg-orange-500/40'}`}>🔥 오버 (x{myPlayer.overpaceTokens})</button>
+                      <button onClick={() => setTooltipInfo({ title: '각성 토큰', desc: CHARACTERS[myPlayer.charId].awaken })} onDoubleClick={() => handleTokenUse('awaken')} className={`flex-1 text-[10px] font-bold py-2 rounded-lg border ${myPlayer.targetsReached > 0 ? 'bg-purple-500/20 border-purple-500 text-purple-400 hover:bg-purple-500/40' : 'bg-gray-800 border-gray-600 text-gray-500'}`}>⚡ 각성 (x{myPlayer.awakenToken})</button>
+                    </div>
+                    {isMyTurn ? (
+                      <div className="flex gap-2 w-full sm:w-2/3">
+                        <button onClick={handleBaseMove} disabled={myPlayer.hasMovedThisTurn} className="flex-[2] bg-sky-500 disabled:bg-slate-600 disabled:text-slate-400 text-white font-bold py-2 rounded-lg shadow-md active:scale-95 text-xs sm:text-sm">기본 이동 ({CHARACTERS[myPlayer.charId].speed})</button>
+                        <button onClick={handleGambleClick} className="flex-1 bg-rose-600 text-white font-bold py-2 rounded-lg shadow-md text-xs sm:text-sm active:scale-95">🎲 도박</button>
+                        <button onClick={endTurn} className="flex-1 bg-gray-600 text-white font-bold py-2 rounded-lg shadow-md text-xs sm:text-sm active:scale-95 border border-gray-500">턴 종료</button>
+                      </div>
+                    ) : (
+                      <div className="flex gap-2 w-full sm:w-2/3">
+                        <div className="flex-1 bg-slate-800 border border-slate-600 text-slate-400 font-bold py-2 rounded-lg text-center text-xs sm:text-sm">상대방의 턴 대기 중...</div>
+                      </div>
+                    )}
+                 </div>
+              </div>
+            </div>
+          )}
         </div>
-      )}
-    </div>
-  );
-}
+      );
+    }
+
+    // React 18 마운트
+    const root = createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
+
+```
